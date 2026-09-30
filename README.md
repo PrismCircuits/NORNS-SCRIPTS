@@ -1,5 +1,3 @@
-# Synthetic Garden
-Synthetic Garden is a Norns script built around four independent looping buffers, designed for 
-organic scanning, evolving textures, and hands-on sample manipulation. It features multiple scan
-modes, loop trimming, pitch control, stereo positioning, delay, MIDI control, and Grid 128 integration 
-for a tactile, performance-focused looping instrument.
+A collection of Norns scripts created for sonic exploration, experimentation, and performance.
+These tools focus on looping, sound transformation, sequencing, modulation, and generative
+processes, with an emphasis on creating new ways to interact with and reshape sound.
