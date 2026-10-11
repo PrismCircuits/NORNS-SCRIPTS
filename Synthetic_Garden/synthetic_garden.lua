@@ -1,6 +1,6 @@
 --
 --
---  Synthetic Garden v0.90
+--  Synthetic Garden v0.93
 --
 --  Written by Skyler King
 --
@@ -1517,10 +1517,10 @@ local function setup_mappable_params()
       redraw()
     end)
 
-    params:add_number("loop_" .. i .. "_level", "Level", 0, 150,
+    params:add_number("loop_" .. i .. "_level", "Level", 0, 100,
       math.floor(loop_level[i] * 100 + 0.5), percent_string)
     params:set_action("loop_" .. i .. "_level", function(x)
-      loop_level[i] = clamp(x / 100, 0, 1.5)
+      loop_level[i] = clamp(x / 100, 0, 1.0)
       apply_scanner()
       redraw()
     end)
@@ -1886,8 +1886,18 @@ local function draw_garden()
 
   screen.font_size(7)
   screen.level(8)
-  screen.move(2, 61)
-  screen.text(string.format("W %d%%", math.floor(scan_width * 100 + 0.5)))
+
+  -- Draw Width as a simple upside-down M / broad W so it reads more clearly
+  -- on the small display than the stock font glyph.
+  screen.move(2, 55)
+  screen.line(4, 60)
+  screen.line(6, 56)
+  screen.line(8, 60)
+  screen.line(10, 55)
+  screen.stroke()
+
+  screen.move(14, 61)
+  screen.text(string.format("%d%%", math.floor(scan_width * 100 + 0.5)))
 
   screen.move(36, 61)
   screen.text(string.format("%.3gHz", scan_rate))
