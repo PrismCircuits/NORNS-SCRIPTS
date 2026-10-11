@@ -1,4 +1,4 @@
-# Synthetic Garden v0.89
+# Synthetic Garden
 ## Four Track Scanning Looper for Monome Norns
 **Written by Skyler King**
 
