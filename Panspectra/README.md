@@ -38,5 +38,10 @@ pressing K3 for you. Set it on page 9 (or in PARAMS > auto snap):
 - rate: in free mode, 0.1-20 Hz; in sync mode, a clock division (4 bars to 1/16)
 - snap chance (PARAMS only): probability that each tick actually captures
 
+While frozen, blur sets how smoothly each capture (K3 or auto snap) morphs
+from the held spectrum to the new one: 0% jumps instantly, higher values
+glide over longer times (up to several seconds near 99%). The glide is
+stepped by the slice clock, so slice rate also affects its speed.
+
 A small square blinks next to FROZEN when a snap fires. Captures happen on
 the engine's next slice, so very slow slice rates delay them.

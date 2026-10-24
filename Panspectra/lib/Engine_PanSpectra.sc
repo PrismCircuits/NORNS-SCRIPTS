@@ -13,7 +13,7 @@ Engine_PanSpectra : CroneEngine {
 
 	var fftBuf, waveBufs, fbBus;
 	var anaSynth, bankSynth, task, luaAddr;
-	var smooth, trackF, trackA, trackOn, refAmp = 0.001;
+	var smooth, target, trackF, trackA, trackOn, refAmp = 0.001;
 
 	var numVoices = 12, sliceRate = 12, frozen = false, captureReq = false;
 	var center = 800, width = 8, pitch = 0, shift = 0;
@@ -91,6 +91,9 @@ Engine_PanSpectra : CroneEngine {
 					fftBuf.getn(0, 1024, { |a|
 						fftBuf.getn(1024, 1024, { |b| this.analyze(a ++ b, snap) });
 					});
+				} {
+					// frozen: blur glides the held spectrum toward the last capture
+					if(target.notNil) { this.morph };
 				};
 				sliceRate.reciprocal.wait;
 			}
@@ -101,7 +104,10 @@ Engine_PanSpectra : CroneEngine {
 			sliceRate = msg[1].clip(0.5, 40);
 			bankSynth.set(\alag, this.ampLag);
 		});
-		this.addCommand("freeze", "i", { |msg| frozen = msg[1] > 0 });
+		this.addCommand("freeze", "i", { |msg|
+			frozen = msg[1] > 0;
+			if(frozen.not) { target = nil };
+		});
 		this.addCommand("capture", "i", { |msg| captureReq = true });
 		this.addCommand("center", "f", { |msg| center = msg[1]; this.resynth });
 		this.addCommand("width", "f", { |msg| width = msg[1]; this.resynth });
@@ -147,10 +153,28 @@ Engine_PanSpectra : CroneEngine {
 		var mags = Array.fill(nb, { |k|
 			if(k == 0) { 0 } { data[2 * k].hypot(data[2 * k + 1]) / norm }
 		});
-		if(snap or: { blur <= 0 }) {
-			smooth = mags;
+		if(snap and: { frozen }) {
+			// a capture while frozen becomes the morph target; the slice clock
+			// steps toward it, so blur sets how long the transition takes
+			target = mags;
+			this.morph;
 		} {
-			smooth = (smooth * blur) + (mags * (1 - blur));
+			if(blur <= 0) {
+				smooth = mags;
+			} {
+				smooth = (smooth * blur) + (mags * (1 - blur));
+			};
+			this.sendSpectrum;
+			this.resynth;
+		};
+	}
+
+	// one slice-step of the frozen-state crossfade (same blend as live blur)
+	morph {
+		smooth = (smooth * blur) + (target * (1 - blur));
+		if((blur <= 0) or: { (smooth - target).abs.maxItem < 1e-6 }) {
+			smooth = target;
+			target = nil;
 		};
 		this.sendSpectrum;
 		this.resynth;
