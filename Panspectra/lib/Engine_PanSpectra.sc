@@ -46,18 +46,27 @@ Engine_PanSpectra : CroneEngine {
 			FFT(buf, sig, 0.25, 1); // 75% overlap so the latest frame is always fresh, hann window
 		}).add;
 
-		SynthDef(\panspectra_bank, { |out, fb_bus, inL, inR, wbuf, wave = 0, alag = 0.05, level = 0.5, spread = 0.7, mix = 1|
+		SynthDef(\panspectra_bank, { |out, fb_bus, inL, inR, wbuf, wave = 0, alag = 0.05, level = 0.5, spread = 0.7, mix = 1,
+			cutoff = 20000, res = 0, ftype = 0|
 			var freqs = NamedControl.kr(\freqs, Array.fill(maxVoices, 220));
 			var amps = NamedControl.kr(\amps, Array.fill(maxVoices, 0));
 			var lags = NamedControl.kr(\lags, Array.fill(maxVoices, 0.05));
 			var pos = Lag.kr(wave, 0.05).clip(0, 2.999);
-			var sigs, wet, dry;
+			var sigs, wet, dry, fc, rq, fsel;
 			freqs = Lag.kr(freqs, lags); // per-voice: 0 for newborn voices, glide otherwise
 			amps = Lag.kr(amps, alag);
 			sigs = VOsc.ar(wbuf + pos, freqs, 0, amps);
 			wet = Mix(sigs.collect { |sig, i|
 				Pan2.ar(sig, ((i * 0.618034).frac * 2 - 1) * spread)
 			});
+			// multimode filter on the wet signal: 0 lowpass, 1 bandpass, 2 highpass
+			// (mode changes crossfade briefly so switching doesn't click)
+			fc = Lag.kr(cutoff, 0.05).clip(20, 20000);
+			rq = Lag.kr(res, 0.05).linexp(0, 1, 1, 0.05);
+			fsel = Lag.kr(ftype, 0.05);
+			wet = wet.collect { |ch|
+				SelectX.ar(fsel, [RLPF.ar(ch, fc, rq), BPF.ar(ch, fc, rq), RHPF.ar(ch, fc, rq)])
+			};
 			wet = Limiter.ar(LeakDC.ar(wet) * level, 0.95, 0.01);
 			dry = [In.ar(inL), In.ar(inR)];
 			Out.ar(fb_bus, wet); // feedback is always the resynthesized signal only
@@ -116,6 +125,9 @@ Engine_PanSpectra : CroneEngine {
 		this.addCommand("glide", "f", { |msg| glide = msg[1] });
 		this.addCommand("blur", "f", { |msg| blur = msg[1].clip(0, 0.99); this.updateAmpLag });
 		this.addCommand("wave", "f", { |msg| bankSynth.set(\wave, msg[1]) });
+		this.addCommand("cutoff", "f", { |msg| bankSynth.set(\cutoff, msg[1]) });
+		this.addCommand("resonance", "f", { |msg| bankSynth.set(\res, msg[1].clip(0, 1)) });
+		this.addCommand("filter_type", "i", { |msg| bankSynth.set(\ftype, msg[1].clip(0, 2)) });
 		this.addCommand("level", "f", { |msg| bankSynth.set(\level, msg[1]) });
 		this.addCommand("mix", "f", { |msg| bankSynth.set(\mix, msg[1].clip(0, 1)) });
 		this.addCommand("spread", "f", { |msg| bankSynth.set(\spread, msg[1]) });

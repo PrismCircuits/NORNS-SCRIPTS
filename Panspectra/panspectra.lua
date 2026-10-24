@@ -6,6 +6,7 @@
 -- K2 freeze
 -- K3 capture slice (frozen)
 -- page 9: auto snap while frozen
+-- pages 10-11: filter
 
 engine.name = "PanSpectra"
 
@@ -29,6 +30,8 @@ local pages = {
   {{"snap_mode", "snap"}, {function()
     return params:get("snap_mode") == 3 and "snap_div" or "snap_rate"
   end, "rate"}},
+  {{"cutoff", "cut"}, {"resonance", "res"}},
+  {{"filter_type", "type"}},
 }
 
 -- a page entry's param id may be a function (rate follows snap mode)
@@ -127,6 +130,15 @@ local function add_params()
   ctl("feedback", "feedback", controlspec.new(0, 1, "lin", 0, 0),
     fmt_pct, function(v) engine.feedback(v) end)
 
+  params:add_separator("filter")
+  params:add{type = "option", id = "filter_type", name = "filter type",
+    options = {"lowpass", "bandpass", "highpass"}, default = 1,
+    action = function(v) engine.filter_type(v - 1) end}
+  ctl("cutoff", "cutoff", controlspec.new(20, 20000, "exp", 0, 20000, "Hz"),
+    fmt_hz, function(v) engine.cutoff(v) end)
+  ctl("resonance", "resonance", controlspec.new(0, 1, "lin", 0, 0),
+    fmt_pct, function(v) engine.resonance(v) end)
+
   params:add_separator("levels")
   ctl("mix", "dry/wet", controlspec.new(0, 1, "lin", 0, 1),
     fmt_pct, function(v) engine.mix(v) end)
@@ -199,7 +211,8 @@ function enc(n, d)
   if n == 1 then
     page = util.clamp(page + d, 1, #pages)
   else
-    params:delta(pid(pages[page][n - 1]), d)
+    local e = pages[page][n - 1]
+    if e then params:delta(pid(e), d) end
   end
 end
 
@@ -278,8 +291,10 @@ function redraw()
   screen.level(15)
   screen.move(0, 63)
   screen.text(pg[1][2] .. " " .. params:string(pid(pg[1])))
-  screen.move(127, 63)
-  screen.text_right(pg[2][2] .. " " .. params:string(pid(pg[2])))
+  if pg[2] then
+    screen.move(127, 63)
+    screen.text_right(pg[2][2] .. " " .. params:string(pid(pg[2])))
+  end
 
   screen.update()
 end

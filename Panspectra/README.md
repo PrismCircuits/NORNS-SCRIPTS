@@ -47,3 +47,10 @@ as before.
 
 A small square blinks next to FROZEN when a snap fires. Captures happen on
 the engine's next slice, so very slow slice rates delay them.
+
+## Filter
+
+A resonant multimode filter on the resynthesized (wet) signal, before the
+output and the feedback path. Page 10: cutoff (20 Hz - 20 kHz) and
+resonance; page 11: type (lowpass / bandpass / highpass). The default is
+lowpass fully open, which is transparent.
