@@ -5,8 +5,6 @@
 -- E2 / E3 adjust
 -- K2 freeze
 -- K3 capture slice (frozen)
--- page 9: auto snap while frozen
--- pages 10-11: filter
 
 engine.name = "PanSpectra"
 
@@ -34,7 +32,6 @@ local pages = {
   {{"filter_type", "type"}},
 }
 
--- a page entry's param id may be a function (rate follows snap mode)
 local function pid(e)
   return type(e[1]) == "function" and e[1]() or e[1]
 end
@@ -104,7 +101,6 @@ local function add_params()
     fmt_db, function(v) engine.threshold(v) end)
   ctl("stability", "stability", controlspec.new(0, 1, "lin", 0, 0.6),
     fmt_pct, function(v) engine.stability(v) end)
-  -- when frozen, blur is the morph time between frozen states
   ctl("blur", "blur", controlspec.new(0, 0.99, "lin", 0, 0),
     function(p)
       if params:get("freeze") == 1 then
@@ -163,10 +159,6 @@ function osc.event(path, args, from)
   end
 end
 
--- auto snap ----------------------------------------------------------------
-
--- while frozen, periodically capture a new slice (free-running Hz or
--- synced to the norns clock), each tick passing a chance roll
 local function snap_loop()
   while true do
     local mode = params:get("snap_mode")

@@ -59,8 +59,6 @@ Engine_PanSpectra : CroneEngine {
 			wet = Mix(sigs.collect { |sig, i|
 				Pan2.ar(sig, ((i * 0.618034).frac * 2 - 1) * spread)
 			});
-			// multimode filter on the wet signal: 0 lowpass, 1 bandpass, 2 highpass
-			// (mode changes crossfade briefly so switching doesn't click)
 			fc = Lag.kr(cutoff, 0.05).clip(20, 20000);
 			rq = Lag.kr(res, 0.05).linexp(0, 1, 1, 0.05);
 			fsel = Lag.kr(ftype, 0.05);
@@ -140,8 +138,6 @@ Engine_PanSpectra : CroneEngine {
 	// amplitude smoothing spans roughly half a slice so levels don't step
 	ampLag { ^(0.6 / sliceRate).clip(0.01, 0.25) }
 
-	// while frozen, blur sets the crossfade time between frozen states
-	// (0 -> instant, 50% -> 2 s, 99% -> ~7.8 s)
 	morphTime { ^(blur * blur * 8).max(this.ampLag) }
 
 	updateAmpLag {
@@ -171,8 +167,6 @@ Engine_PanSpectra : CroneEngine {
 			if(k == 0) { 0 } { data[2 * k].hypot(data[2 * k + 1]) / norm }
 		});
 		if(snap and: { frozen }) {
-			// a capture while frozen is taken exactly; the morph from the
-			// previous frozen state happens on the voices (see resynth)
 			smooth = mags;
 			this.sendSpectrum;
 			this.resynth(true);
@@ -209,8 +203,6 @@ Engine_PanSpectra : CroneEngine {
 		^best
 	}
 
-	// snapshot: a capture while frozen. the new state is matched exactly (no
-	// hysteresis or pitch smoothing) and voices glide/fade to it over morphTime
 	resynth { |snapshot = false|
 		var hz = this.binHz;
 		var nb = smooth.size;
@@ -305,8 +297,6 @@ Engine_PanSpectra : CroneEngine {
 			if(trackOn[v]) { ((trackA[v] / refAmp).min(1) ** (1 - flatten)) * scale } { 0 }
 		});
 		if(snapshot) { baseLag = this.morphTime };
-		// newborn voices jump in pitch while silent; one stolen from a sounding
-		// partial glides instead, so a frozen morph never clicks
 		lags = Array.fill(maxVoices, { |v|
 			if(born[v] and: { snapshot.not or: { oldOn[v].not } }) { 0 } { baseLag }
 		});
