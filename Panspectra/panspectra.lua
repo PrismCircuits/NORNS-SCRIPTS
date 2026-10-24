@@ -13,6 +13,11 @@ local peaks = {}
 local page = 1
 local last_snap = 0
 
+local function capture()
+  engine.capture(1)
+  last_snap = util.time()
+end
+
 local BASE = 50
 local H = 36
 
@@ -80,7 +85,7 @@ local function add_params()
   params:add{type = "binary", id = "freeze", name = "freeze", behavior = "toggle",
     default = 0, action = function(v) engine.freeze(v) end}
   params:add{type = "trigger", id = "capture", name = "capture slice",
-    action = function() engine.capture(1) end}
+    action = function() capture() end}
 
   params:add_separator("auto snap")
   params:add{type = "option", id = "snap_mode", name = "snap mode",
@@ -171,8 +176,7 @@ local function snap_loop()
     end
     if mode > 1 and params:get("snap_mode") > 1 and params:get("freeze") == 1
       and math.random() < params:get("snap_chance") then
-      engine.capture(1)
-      last_snap = util.time()
+      capture()
     end
   end
 end
@@ -190,10 +194,12 @@ function init()
 
   add_params()
   params:bang()
+  g.key = grid_key
   clock.run(function()
     while true do
       clock.sleep(1 / 15)
       redraw()
+      grid_redraw()
     end
   end)
   clock.run(snap_loop)
@@ -213,9 +219,163 @@ function key(n, z)
   if n == 2 then
     params:set("freeze", 1 - params:get("freeze"))
   elseif n == 3 then
-    engine.capture(1)
-    last_snap = util.time()
+    capture()
   end
+end
+
+local g = grid.connect()
+local grid_view = "spectrum"
+local grid_page = 1
+local menu_held = false
+local menu_chose = false
+local popup, popup_time = nil, 0
+
+local grid_pages = {
+  {"voices", "slice_rate", "freeze", "capture"},
+  {"center", "width", "threshold", "stability", "blur"},
+  {"pitch", "shift", "wave", "flatten", "glide"},
+  {"spread", "feedback", "mix", "input_gain", "level"},
+  {"snap_mode", function()
+    return params:get("snap_mode") == 3 and "snap_div" or "snap_rate"
+  end, "snap_chance"},
+  {"filter_type", "cutoff", "resonance"},
+}
+
+local function gid(e)
+  return type(e) == "function" and e() or e
+end
+
+local function get_raw(id, p)
+  if p.t == params.tCONTROL then return params:get_raw(id) end
+  if p.t == params.tNUMBER then
+    return (params:get(id) - p.min) / math.max(p.max - p.min, 1)
+  end
+  return 0
+end
+
+local function set_raw(id, p, r)
+  if p.t == params.tCONTROL then
+    params:set_raw(id, r)
+  elseif p.t == params.tNUMBER then
+    params:set(id, util.round(p.min + r * (p.max - p.min)))
+  end
+end
+
+local function show_popup(id)
+  popup = params:lookup_param(id).name .. " " .. params:string(id)
+  popup_time = util.time()
+end
+
+local function grid_key(x, y, z)
+  if x == 1 and y == 8 then
+    if z == 1 then
+      menu_held = true
+      menu_chose = false
+    else
+      menu_held = false
+      grid_view = menu_chose and "edit" or "spectrum"
+    end
+    return
+  end
+
+  if not (menu_held or grid_view == "edit") or z == 0 then return end
+
+  if y == 8 then
+    if x <= #grid_pages + 1 then
+      grid_page = x - 1
+      menu_chose = true
+    end
+    return
+  end
+
+  local e = grid_pages[grid_page][y]
+  if not e then return end
+  local id = gid(e)
+  local p = params:lookup_param(id)
+  menu_chose = true
+
+  if p.t == params.tTRIGGER then
+    p:bang()
+  elseif p.t == params.tBINARY then
+    params:set(id, 1 - params:get(id))
+  elseif p.t == params.tOPTION then
+    if x <= p.count then params:set(id, x) end
+  elseif x == 15 then
+    params:delta(id, -1)
+  elseif x == 16 then
+    params:delta(id, 1)
+  else
+    set_raw(id, p, (x - 1) / 13)
+  end
+  show_popup(id)
+end
+
+local function grid_spectrum()
+  local n = #spectrum
+  if n > 0 then
+    for col = 1, 16 do
+      local v = 0
+      for i = math.floor((col - 1) * n / 16) + 1, math.floor(col * n / 16) do
+        v = math.max(v, spectrum[i] or 0)
+      end
+      local h = v * 8
+      for k = 1, 8 do
+        local lvl = 0
+        if h >= k then
+          lvl = 2 + k
+        elseif h > k - 1 then
+          lvl = math.floor((h - (k - 1)) * (2 + k))
+        end
+        if lvl > 0 then g:led(col, 9 - k, lvl) end
+      end
+    end
+  end
+
+  for _, pk in ipairs(peaks) do
+    local f = math.max(pk.f, 1)
+    local pos = util.clamp(math.log(f / 40) / math.log(300), 0, 1)
+    local col = util.clamp(math.floor(pos * 16) + 1, 1, 16)
+    local row = util.clamp(math.ceil(pk.a * 8), 1, 8)
+    g:led(col, 9 - row, 15)
+  end
+end
+
+local function grid_editor()
+  for y, e in ipairs(grid_pages[grid_page]) do
+    local id = gid(e)
+    local p = params:lookup_param(id)
+    if p.t == params.tTRIGGER then
+      g:led(1, y, util.time() - last_snap < 0.1 and 15 or 3)
+    elseif p.t == params.tBINARY then
+      g:led(1, y, params:get(id) == 1 and 15 or 3)
+    elseif p.t == params.tOPTION then
+      for x = 1, p.count do
+        g:led(x, y, params:get(id) == x and 15 or 3)
+      end
+    else
+      local pos = util.round(get_raw(id, p) * 13) + 1
+      for x = 1, 14 do
+        g:led(x, y, x < pos and 5 or (x == pos and 15 or 1))
+      end
+      g:led(15, y, 3)
+      g:led(16, y, 3)
+    end
+  end
+
+  g:led(1, 8, menu_held and 15 or 6)
+  for i = 1, #grid_pages do
+    g:led(i + 1, 8, i == grid_page and 15 or 4)
+  end
+end
+
+local function grid_redraw()
+  g:all(0)
+  if menu_held or grid_view == "edit" then
+    grid_editor()
+  else
+    grid_spectrum()
+  end
+  g:refresh()
 end
 
 local function fx(f)
@@ -281,11 +441,16 @@ function redraw()
   -- page params
   local pg = pages[page]
   screen.level(15)
-  screen.move(0, 63)
-  screen.text(pg[1][2] .. " " .. params:string(pid(pg[1])))
-  if pg[2] then
-    screen.move(127, 63)
-    screen.text_right(pg[2][2] .. " " .. params:string(pid(pg[2])))
+  if popup and util.time() - popup_time < 1.5 then
+    screen.move(64, 63)
+    screen.text_center(popup)
+  else
+    screen.move(0, 63)
+    screen.text(pg[1][2] .. " " .. params:string(pid(pg[1])))
+    if pg[2] then
+      screen.move(127, 63)
+      screen.text_right(pg[2][2] .. " " .. params:string(pid(pg[2])))
+    end
   end
 
   screen.update()

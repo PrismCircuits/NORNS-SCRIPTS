@@ -54,3 +54,32 @@ A resonant multimode filter on the resynthesized (wet) signal, before the
 output and the feedback path. Page 10: cutoff (20 Hz - 20 kHz) and
 resonance; page 11: type (lowpass / bandpass / highpass). The default is
 lowpass fully open, which is transparent.
+
+## Grid (128)
+
+Main view: the frequency spectrum across all 128 keys (low to high, left to
+right), with the resynthesized partials lit brightest.
+
+Hold the bottom-left key to open the menu. While holding it:
+
+- bottom row, keys 2-7: choose a page
+  1. main: voices, slice rate, freeze, capture
+  2. window: center, bandwidth, threshold, stability, blur
+  3. resynthesis: pitch, freq shift, waveform, flatten, glide
+  4. output: stereo spread, feedback, dry/wet, input gain, output level
+  5. auto snap: snap mode, rate (or division in sync mode), chance
+  6. filter: type, cutoff, resonance
+- rows 1-7 show that page, one parameter per row
+
+Release after choosing a page (or editing) and the page stays open; tap the
+bottom-left key again to go back to the spectrum. Holding and releasing it
+without choosing anything also returns to the spectrum.
+
+On a page:
+
+- sliders: keys 1-14 set the value, 15 / 16 nudge it down / up
+- choices (filter type, snap mode, division): one key per option
+- freeze toggles, capture fires a snapshot
+
+The norns screen briefly shows each parameter's name and value as you
+change it on the grid.
