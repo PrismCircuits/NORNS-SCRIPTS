@@ -43,7 +43,7 @@ states: each capture (K3 or auto snap) crossfades from the held sound to the
 new one. Partials that carry over glide in pitch, new ones fade in, gone ones
 fade out. The blur readout shows the time in seconds while frozen: 0 is
 instant, 50% is 2 s, 99% is about 8 s. When live, blur smooths the spectrum
-as before.
+as before. The spectrum on the screen and grid morphs along with the sound.
 
 A small square blinks next to FROZEN when a snap fires. Captures happen on
 the engine's next slice, so very slow slice rates delay them.

@@ -10,6 +10,9 @@ engine.name = "PanSpectra"
 
 local spectrum = {}
 local peaks = {}
+local spec_target = {}
+local prev_peaks = {}
+local peak_fade = 1
 local page = 1
 local last_snap = 0
 
@@ -153,15 +156,51 @@ end
 
 function osc.event(path, args, from)
   if path == "/panspectra/spec" then
-    spectrum = args
+    spec_target = args
+    if params:get("freeze") == 0 then spectrum = args end
   elseif path == "/panspectra/peaks" then
     local n = math.floor(args[1] or 0)
     local t = {}
     for i = 1, n do
       t[i] = {f = args[2 * i], a = args[2 * i + 1]}
     end
+    if params:get("freeze") == 1 then
+      prev_peaks = peak_fade < 0.5 and prev_peaks or peaks
+      peak_fade = 0
+    end
     peaks = t
   end
+end
+
+local function morph_display(dt)
+  local mt = 0
+  if params:get("freeze") == 1 then
+    local b = params:get("blur")
+    mt = b * b * 8
+  end
+  if mt < 0.05 then
+    spectrum = spec_target
+    peak_fade = 1
+    prev_peaks = {}
+    return
+  end
+  local a = 1 - math.exp(-dt * 6.9 / mt)
+  local nxt = {}
+  for i = 1, #spec_target do
+    local cur = spectrum[i] or 0
+    nxt[i] = cur + (spec_target[i] - cur) * a
+  end
+  spectrum = nxt
+  peak_fade = peak_fade + (1 - peak_fade) * a
+  if peak_fade > 0.99 then
+    peak_fade = 1
+    prev_peaks = {}
+  end
+end
+
+local function each_peak(fn)
+  for _, pk in ipairs(prev_peaks) do fn(pk, 1 - peak_fade) end
+  for _, pk in ipairs(peaks) do fn(pk, peak_fade) end
 end
 
 local function snap_loop()
@@ -313,13 +352,16 @@ local function grid_spectrum()
     end
   end
 
-  for _, pk in ipairs(peaks) do
-    local f = math.max(pk.f, 1)
-    local pos = util.clamp(math.log(f / 40) / math.log(300), 0, 1)
-    local col = util.clamp(math.floor(pos * 16) + 1, 1, 16)
-    local row = util.clamp(math.ceil(pk.a * 8), 1, 8)
-    g:led(col, 9 - row, 15)
-  end
+  each_peak(function(pk, w)
+    local lvl = math.floor(w * 15 + 0.5)
+    if lvl > 0 then
+      local f = math.max(pk.f, 1)
+      local pos = util.clamp(math.log(f / 40) / math.log(300), 0, 1)
+      local col = util.clamp(math.floor(pos * 16) + 1, 1, 16)
+      local row = util.clamp(math.ceil(pk.a * 8), 1, 8)
+      g:led(col, 9 - row, lvl)
+    end
+  end)
 end
 
 local function grid_editor()
@@ -371,6 +413,7 @@ function init()
   clock.run(function()
     while true do
       clock.sleep(1 / 15)
+      morph_display(1 / 15)
       redraw()
       grid_redraw()
     end
@@ -415,13 +458,16 @@ function redraw()
   screen.stroke()
 
   -- resynthesized partials (post-transpose)
-  screen.level(15)
-  for _, p in ipairs(peaks) do
-    local x = math.floor(fx(p.f)) + 0.5
-    screen.move(x, BASE)
-    screen.line(x, BASE - math.max(2, p.a * H))
-  end
-  screen.stroke()
+  each_peak(function(p, w)
+    local lvl = math.floor(w * 15 + 0.5)
+    if lvl > 0 then
+      local x = math.floor(fx(p.f)) + 0.5
+      screen.level(lvl)
+      screen.move(x, BASE)
+      screen.line(x, BASE - math.max(2, p.a * H))
+      screen.stroke()
+    end
+  end)
 
   -- header
   local frozen = params:get("freeze") == 1
