@@ -187,24 +187,6 @@ end
 -- while the script runs (otherwise dry would leak through at 100% wet)
 local saved_monitor = nil
 
-function init()
-  local ok, v = pcall(function() return params:get("monitor_level") end)
-  if ok and type(v) == "number" then saved_monitor = v end
-  audio.level_monitor(0)
-
-  add_params()
-  params:bang()
-  g.key = grid_key
-  clock.run(function()
-    while true do
-      clock.sleep(1 / 15)
-      redraw()
-      grid_redraw()
-    end
-  end)
-  clock.run(snap_loop)
-end
-
 function enc(n, d)
   if n == 1 then
     page = util.clamp(page + d, 1, #pages)
@@ -376,6 +358,24 @@ local function grid_redraw()
     grid_spectrum()
   end
   g:refresh()
+end
+
+function init()
+  local ok, v = pcall(function() return params:get("monitor_level") end)
+  if ok and type(v) == "number" then saved_monitor = v end
+  audio.level_monitor(0)
+
+  add_params()
+  params:bang()
+  g.key = grid_key
+  clock.run(function()
+    while true do
+      clock.sleep(1 / 15)
+      redraw()
+      grid_redraw()
+    end
+  end)
+  clock.run(snap_loop)
 end
 
 local function fx(f)
