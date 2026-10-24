@@ -1,6 +1,6 @@
 # Panspectra
 
-Spectral resynthesis for norns, inspired by the Rossum Panharmonium.
+Spectral resynthesis for norns
 
 The input is analysed with an FFT; each "slice", spectral peaks inside a
 frequency window are tracked and played back on a bank of up to 33
