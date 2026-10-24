@@ -101,8 +101,15 @@ local function add_params()
     fmt_db, function(v) engine.threshold(v) end)
   ctl("stability", "stability", controlspec.new(0, 1, "lin", 0, 0.6),
     fmt_pct, function(v) engine.stability(v) end)
+  -- when frozen, blur is the morph time between frozen states
   ctl("blur", "blur", controlspec.new(0, 0.99, "lin", 0, 0),
-    fmt_pct, function(v) engine.blur(v) end)
+    function(p)
+      if params:get("freeze") == 1 then
+        local v = p:get()
+        return string.format("%.1fs", v * v * 8)
+      end
+      return fmt_pct(p)
+    end, function(v) engine.blur(v) end)
 
   params:add_separator("resynthesis")
   ctl("pitch", "pitch", controlspec.new(-36, 36, "lin", 1, 0, "st", 1 / 72),

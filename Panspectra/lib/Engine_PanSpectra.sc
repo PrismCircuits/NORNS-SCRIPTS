@@ -13,7 +13,7 @@ Engine_PanSpectra : CroneEngine {
 
 	var fftBuf, waveBufs, fbBus;
 	var anaSynth, bankSynth, task, luaAddr;
-	var smooth, target, trackF, trackA, trackOn, refAmp = 0.001;
+	var smooth, trackF, trackA, trackOn, refAmp = 0.001;
 
 	var numVoices = 12, sliceRate = 12, frozen = false, captureReq = false;
 	var center = 800, width = 8, pitch = 0, shift = 0;
@@ -91,9 +91,6 @@ Engine_PanSpectra : CroneEngine {
 					fftBuf.getn(0, 1024, { |a|
 						fftBuf.getn(1024, 1024, { |b| this.analyze(a ++ b, snap) });
 					});
-				} {
-					// frozen: blur glides the held spectrum toward the last capture
-					if(target.notNil) { this.morph };
 				};
 				sliceRate.reciprocal.wait;
 			}
@@ -102,11 +99,11 @@ Engine_PanSpectra : CroneEngine {
 		this.addCommand("voices", "i", { |msg| numVoices = msg[1].asInteger.clip(1, maxVoices); this.resynth });
 		this.addCommand("slice_rate", "f", { |msg|
 			sliceRate = msg[1].clip(0.5, 40);
-			bankSynth.set(\alag, this.ampLag);
+			this.updateAmpLag;
 		});
 		this.addCommand("freeze", "i", { |msg|
 			frozen = msg[1] > 0;
-			if(frozen.not) { target = nil };
+			this.updateAmpLag;
 		});
 		this.addCommand("capture", "i", { |msg| captureReq = true });
 		this.addCommand("center", "f", { |msg| center = msg[1]; this.resynth });
@@ -117,7 +114,7 @@ Engine_PanSpectra : CroneEngine {
 		this.addCommand("threshold", "f", { |msg| threshDb = msg[1]; this.resynth });
 		this.addCommand("stability", "f", { |msg| stability = msg[1].clip(0, 1) });
 		this.addCommand("glide", "f", { |msg| glide = msg[1] });
-		this.addCommand("blur", "f", { |msg| blur = msg[1].clip(0, 0.99) });
+		this.addCommand("blur", "f", { |msg| blur = msg[1].clip(0, 0.99); this.updateAmpLag });
 		this.addCommand("wave", "f", { |msg| bankSynth.set(\wave, msg[1]) });
 		this.addCommand("level", "f", { |msg| bankSynth.set(\level, msg[1]) });
 		this.addCommand("mix", "f", { |msg| bankSynth.set(\mix, msg[1].clip(0, 1)) });
@@ -130,6 +127,14 @@ Engine_PanSpectra : CroneEngine {
 
 	// amplitude smoothing spans roughly half a slice so levels don't step
 	ampLag { ^(0.6 / sliceRate).clip(0.01, 0.25) }
+
+	// while frozen, blur sets the crossfade time between frozen states
+	// (0 -> instant, 50% -> 2 s, 99% -> ~7.8 s)
+	morphTime { ^(blur * blur * 8).max(this.ampLag) }
+
+	updateAmpLag {
+		bankSynth.set(\alag, if(frozen) { this.morphTime } { this.ampLag });
+	}
 
 	fillWaves {
 		var h = 24;
@@ -154,10 +159,11 @@ Engine_PanSpectra : CroneEngine {
 			if(k == 0) { 0 } { data[2 * k].hypot(data[2 * k + 1]) / norm }
 		});
 		if(snap and: { frozen }) {
-			// a capture while frozen becomes the morph target; the slice clock
-			// steps toward it, so blur sets how long the transition takes
-			target = mags;
-			this.morph;
+			// a capture while frozen is taken exactly; the morph from the
+			// previous frozen state happens on the voices (see resynth)
+			smooth = mags;
+			this.sendSpectrum;
+			this.resynth(true);
 		} {
 			if(blur <= 0) {
 				smooth = mags;
@@ -167,17 +173,6 @@ Engine_PanSpectra : CroneEngine {
 			this.sendSpectrum;
 			this.resynth;
 		};
-	}
-
-	// one slice-step of the frozen-state crossfade (same blend as live blur)
-	morph {
-		smooth = (smooth * blur) + (target * (1 - blur));
-		if((blur <= 0) or: { (smooth - target).abs.maxItem < 1e-6 }) {
-			smooth = target;
-			target = nil;
-		};
-		this.sendSpectrum;
-		this.resynth;
 	}
 
 	// parabolic interpolation on log magnitude -> [freq, amp]
@@ -202,7 +197,9 @@ Engine_PanSpectra : CroneEngine {
 		^best
 	}
 
-	resynth {
+	// snapshot: a capture while frozen. the new state is matched exactly (no
+	// hysteresis or pitch smoothing) and voices glide/fade to it over morphTime
+	resynth { |snapshot = false|
 		var hz = this.binHz;
 		var nb = smooth.size;
 		var lo = (center * (2 ** (width * -0.5)) / hz).floor.asInteger.clip(3, nb - 4);
@@ -248,7 +245,7 @@ Engine_PanSpectra : CroneEngine {
 		};
 
 		// 3. rank, giving sounding tracks a bonus (hysteresis, up to ~18 dB)
-		bonus = 1 + (stability * 7);
+		bonus = if(snapshot) { 1 } { 1 + (stability * 7) };
 		scores = cands.collect { |c, ci| c[1] * if(candVoice[ci] >= 0) { bonus } { 1 } };
 		order = Array.series(cands.size).sort({ |a, b| scores[a] > scores[b] });
 		if(order.size > numVoices) { order = order.copyRange(0, numVoices - 1) };
@@ -258,7 +255,7 @@ Engine_PanSpectra : CroneEngine {
 		oldOn = trackOn.copy;
 		newOn = Array.fill(maxVoices, false);
 		born = Array.fill(maxVoices, false);
-		keep = stability * 0.85;
+		keep = if(snapshot) { 0 } { stability * 0.85 };
 		order.do { |ci|
 			var v = candVoice[ci];
 			if(v >= 0) {
@@ -295,7 +292,12 @@ Engine_PanSpectra : CroneEngine {
 		outA = Array.fill(maxVoices, { |v|
 			if(trackOn[v]) { ((trackA[v] / refAmp).min(1) ** (1 - flatten)) * scale } { 0 }
 		});
-		lags = Array.fill(maxVoices, { |v| if(born[v]) { 0 } { baseLag } });
+		if(snapshot) { baseLag = this.morphTime };
+		// newborn voices jump in pitch while silent; one stolen from a sounding
+		// partial glides instead, so a frozen morph never clicks
+		lags = Array.fill(maxVoices, { |v|
+			if(born[v] and: { snapshot.not or: { oldOn[v].not } }) { 0 } { baseLag }
+		});
 
 		bankSynth.setn(\freqs, outF, \amps, outA, \lags, lags);
 
