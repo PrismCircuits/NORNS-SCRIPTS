@@ -5,12 +5,14 @@
 -- E2 / E3 adjust
 -- K2 freeze
 -- K3 capture slice (frozen)
+-- page 9: auto snap while frozen
 
 engine.name = "PanSpectra"
 
 local spectrum = {}
 local peaks = {}
 local page = 1
+local last_snap = 0
 
 local BASE = 50
 local H = 36
@@ -24,7 +26,15 @@ local pages = {
   {{"glide", "glide"}, {"blur", "blur"}},
   {{"feedback", "fdbk"}, {"spread", "spread"}},
   {{"mix", "mix"}, {"level", "level"}},
+  {{"snap_mode", "snap"}, {function()
+    return params:get("snap_mode") == 3 and "snap_div" or "snap_rate"
+  end, "rate"}},
 }
+
+-- a page entry's param id may be a function (rate follows snap mode)
+local function pid(e)
+  return type(e[1]) == "function" and e[1]() or e[1]
+end
 
 -- formatters ---------------------------------------------------------------
 
@@ -50,6 +60,9 @@ local function fmt_oct(p) return string.format("%.1foct", p:get()) end
 local function fmt_db(p) return string.format("%.0fdB", p:get()) end
 local function fmt_shift(p) return string.format("%+dHz", math.floor(p:get() + 0.5)) end
 
+local snap_div_names = {"4 bars", "2 bars", "1 bar", "1/2", "1/4", "1/8", "1/16"}
+local snap_div_beats = {16, 8, 4, 2, 1, 1 / 2, 1 / 4}
+
 local function ctl(id, name, spec, fmt, action)
   params:add{type = "control", id = id, name = name, controlspec = spec,
     formatter = fmt, action = action}
@@ -68,6 +81,16 @@ local function add_params()
     default = 0, action = function(v) engine.freeze(v) end}
   params:add{type = "trigger", id = "capture", name = "capture slice",
     action = function() engine.capture(1) end}
+
+  params:add_separator("auto snap")
+  params:add{type = "option", id = "snap_mode", name = "snap mode",
+    options = {"off", "free", "sync"}, default = 1}
+  ctl("snap_rate", "snap rate", controlspec.new(0.1, 20, "exp", 0, 1, "Hz"),
+    function(p) return string.format("%.2fHz", p:get()) end)
+  params:add{type = "option", id = "snap_div", name = "snap division",
+    options = snap_div_names, default = 5}
+  ctl("snap_chance", "snap chance", controlspec.new(0, 1, "lin", 0, 1),
+    fmt_pct)
 
   params:add_separator("spectrum window")
   ctl("center", "center", controlspec.new(40, 12000, "exp", 0, 800, "Hz"),
@@ -121,6 +144,28 @@ function osc.event(path, args, from)
   end
 end
 
+-- auto snap ----------------------------------------------------------------
+
+-- while frozen, periodically capture a new slice (free-running Hz or
+-- synced to the norns clock), each tick passing a chance roll
+local function snap_loop()
+  while true do
+    local mode = params:get("snap_mode")
+    if mode == 2 then
+      clock.sleep(1 / params:get("snap_rate"))
+    elseif mode == 3 then
+      clock.sync(snap_div_beats[params:get("snap_div")])
+    else
+      clock.sleep(0.05)
+    end
+    if mode > 1 and params:get("snap_mode") > 1 and params:get("freeze") == 1
+      and math.random() < params:get("snap_chance") then
+      engine.capture(1)
+      last_snap = util.time()
+    end
+  end
+end
+
 -- ui -----------------------------------------------------------------------
 
 -- the engine provides its own dry path, so mute norns' input monitor
@@ -140,13 +185,14 @@ function init()
       redraw()
     end
   end)
+  clock.run(snap_loop)
 end
 
 function enc(n, d)
   if n == 1 then
     page = util.clamp(page + d, 1, #pages)
   else
-    params:delta(pages[page][n - 1][1], d)
+    params:delta(pid(pages[page][n - 1]), d)
   end
 end
 
@@ -156,6 +202,7 @@ function key(n, z)
     params:set("freeze", 1 - params:get("freeze"))
   elseif n == 3 then
     engine.capture(1)
+    last_snap = util.time()
   end
 end
 
@@ -214,14 +261,18 @@ function redraw()
   screen.level(frozen and 15 or 4)
   screen.move(127, 7)
   screen.text_right(frozen and "FROZEN" or "live")
+  if frozen and util.time() - last_snap < 0.1 then
+    screen.rect(91, 2, 3, 3)
+    screen.fill()
+  end
 
   -- page params
   local pg = pages[page]
   screen.level(15)
   screen.move(0, 63)
-  screen.text(pg[1][2] .. " " .. params:string(pg[1][1]))
+  screen.text(pg[1][2] .. " " .. params:string(pid(pg[1])))
   screen.move(127, 63)
-  screen.text_right(pg[2][2] .. " " .. params:string(pg[2][1]))
+  screen.text_right(pg[2][2] .. " " .. params:string(pid(pg[2])))
 
   screen.update()
 end

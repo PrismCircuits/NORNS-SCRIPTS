@@ -28,3 +28,15 @@ Restart norns (SYSTEM > RESTART) after installing so the new engine is compiled.
 - E2 / E3: adjust
 - K2: freeze
 - K3: capture slice (while frozen)
+
+## Auto snap
+
+While frozen, Panspectra can capture new slices on its own, like an LFO
+pressing K3 for you. Set it on page 9 (or in PARAMS > auto snap):
+
+- snap mode: off / free / sync
+- rate: in free mode, 0.1-20 Hz; in sync mode, a clock division (4 bars to 1/16)
+- snap chance (PARAMS only): probability that each tick actually captures
+
+A small square blinks next to FROZEN when a snap fires. Captures happen on
+the engine's next slice, so very slow slice rates delay them.
