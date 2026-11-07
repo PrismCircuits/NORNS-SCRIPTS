@@ -103,7 +103,7 @@ Engine_PanSpectra : CroneEngine {
 
 		SynthDef(\panspectra_bank, { |out, fb_bus, inL, inR, wbuf, mbus, wave = 0, alag = 0.05,
 			level = 0.5, spread = 0.7, mix = 1, pitch = 0, shift = 0, flatten = 0, scale = 0.3,
-			attack = 0.5, release = 1.0, fade = 0.3, ftype = 0, cutoff = 18000, res = 0.2|
+			attack = 0.5, release = 1.0, fade = 0.3, ftype = 0, cutoff = 18000, res = 0.2, mtime = 0|
 			var freqs = NamedControl.kr(\freqs, Array.fill(maxVoices, 220));
 			var rels = NamedControl.kr(\rels, Array.fill(maxVoices, 0));
 			var lags = NamedControl.kr(\lags, Array.fill(maxVoices, 0.05));
@@ -117,8 +117,8 @@ Engine_PanSpectra : CroneEngine {
 			var cut = (Lag.kr(cutoff, 0.05) * (900 ** In.kr(mbus + 18))).clip(20, 18000);
 			var rq = 1 - ((Lag.kr(res, 0.05) + In.kr(mbus + 19)).clip(0, 1) * 0.95);
 			// envelope times never go below the slice-smoothing time
-			var atk = (attack * (2000 ** In.kr(mbus + 20))).clip(0.005, 10).max(alag);
-			var rel = (release * (2000 ** In.kr(mbus + 21))).clip(0.005, 10).max(alag);
+			var atk = (attack * (2000 ** In.kr(mbus + 20))).clip(0.005, 10).max(alag).max(mtime);
+			var rel = (release * (2000 ** In.kr(mbus + 21))).clip(0.005, 10).max(alag).max(mtime);
 			var fd = (Lag.kr(fade, 0.05) * (10000 ** In.kr(mbus + 22))).clip(0.001, 10);
 			var amps, sigs, wet, dry;
 			freqs = Lag.kr(freqs, lags); // per-voice: 0 for newborn voices, glide otherwise
@@ -200,8 +200,8 @@ Engine_PanSpectra : CroneEngine {
 
 		this.addCommand("voices", "i", { |msg| numVoices = msg[1].asInteger.clip(1, maxVoices); dirty = true });
 		this.addCommand("slice_rate", "f", { |msg| sliceRate = msg[1].clip(0.5, 40) });
-		this.addCommand("freeze", "i", { |msg| frozen = msg[1] > 0 });
-		this.addCommand("capture", "i", { |msg| captureReq = true });
+		this.addCommand("freeze", "i", { |msg| frozen = msg[1] > 0; this.updateMorph });
+		this.addCommand("capture", "i", { |msg| captureReq = true; this.updateMorph });
 		this.addCommand("center", "f", { |msg| center = msg[1]; dirty = true });
 		this.addCommand("width", "f", { |msg| width = msg[1]; dirty = true });
 		this.addCommand("pitch", "f", { |msg| pitch = msg[1]; bankSynth.set(\pitch, pitch); dirty = true });
@@ -210,7 +210,7 @@ Engine_PanSpectra : CroneEngine {
 		this.addCommand("threshold", "f", { |msg| threshDb = msg[1]; dirty = true });
 		this.addCommand("stability", "f", { |msg| stability = msg[1].clip(0, 1) });
 		this.addCommand("glide", "f", { |msg| glide = msg[1] });
-		this.addCommand("blur", "f", { |msg| blur = msg[1].clip(0, 0.99) });
+		this.addCommand("blur", "f", { |msg| blur = msg[1].clip(0, 0.99); this.updateMorph });
 		this.addCommand("wave", "f", { |msg| bankSynth.set(\wave, msg[1]) });
 		this.addCommand("level", "f", { |msg| bankSynth.set(\level, msg[1]) });
 		this.addCommand("mix", "f", { |msg| bankSynth.set(\mix, msg[1].clip(0, 1)) });
@@ -261,9 +261,14 @@ Engine_PanSpectra : CroneEngine {
 	effThresh { ^(threshDb + (modOff[10] * 70)).clip(-90, -20) }
 	effBlur { ^(blur + (modOff[11] * 0.99)).clip(0, 0.99) }
 	effGlide { ^(glide * (5000 ** modOff[12])).clip(0.001, 5) }
+	morphTime { var b = this.effBlur; ^b * b * 8 }
+
+	updateMorph { bankSynth.set(\mtime, if(frozen) { this.morphTime } { 0 }) }
+
 	effRelease {
 		var r = (release * (2000 ** modOff[21])).clip(0.005, 10).max(this.ampLag);
 		var f = (fade * (10000 ** modOff[22])).clip(0.001, 10);
+		if(frozen) { r = r.max(this.morphTime) };
 		^(r + f) * 2.5 // allow for the S-curve tails
 	}
 
@@ -301,7 +306,7 @@ Engine_PanSpectra : CroneEngine {
 			smooth = (smooth * b) + (mags * (1 - b));
 		};
 		this.sendSpectrum;
-		this.resynth;
+		this.resynth(snap and: { frozen });
 	}
 
 	// parabolic interpolation on log magnitude -> [freq, amp]
@@ -329,7 +334,7 @@ Engine_PanSpectra : CroneEngine {
 		^best
 	}
 
-	resynth {
+	resynth { |snapshot = false|
 		var hz = this.binHz;
 		var nb = smooth.size;
 		var now = Main.elapsedTime;
@@ -380,7 +385,7 @@ Engine_PanSpectra : CroneEngine {
 		};
 
 		// 3. rank, giving existing voices a bonus (hysteresis, up to ~18 dB)
-		bonus = 1 + (stab * 7);
+		bonus = if(snapshot) { 1 } { 1 + (stab * 7) };
 		scores = cands.collect { |c, ci| c[1] * if(candVoice[ci] >= 0) { bonus } { 1 } };
 		order = Array.series(cands.size).sort({ |a, b| scores[a] > scores[b] });
 		if(order.size > nv) { order = order.copyRange(0, nv - 1) };
@@ -390,7 +395,7 @@ Engine_PanSpectra : CroneEngine {
 		oldOn = trackOn.copy;
 		newOn = Array.fill(maxVoices, false);
 		born = Array.fill(maxVoices, false);
-		keep = stab * 0.85;
+		keep = if(snapshot) { 0 } { stab * 0.85 };
 		order.do { |ci|
 			var v = candVoice[ci];
 			if(v >= 0) {
@@ -428,7 +433,10 @@ Engine_PanSpectra : CroneEngine {
 		// source freqs + relative levels; pitch/shift/flatten are applied in the synth
 		outF = Array.fill(maxVoices, { |v| trackF[v].clip(20, 18000) });
 		rels = Array.fill(maxVoices, { |v| if(trackOn[v]) { (trackA[v] / refAmp).min(1) } { 0 } });
-		lags = Array.fill(maxVoices, { |v| if(born[v]) { 0 } { baseLag } });
+		if(snapshot) { baseLag = baseLag.max(this.morphTime) };
+		lags = Array.fill(maxVoices, { |v|
+			if(born[v] and: { snapshot.not or: { oldOn[v].not } }) { 0 } { baseLag }
+		});
 
 		bankSynth.setn(\freqs, outF, \rels, rels, \lags, lags);
 		bankSynth.set(\scale, count.max(1).sqrt.reciprocal);

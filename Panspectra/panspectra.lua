@@ -21,7 +21,24 @@ local NUM_SLOTS = 10
 
 local spectrum = {}
 local peaks = {}
+local spec_target = {}
+local prev_peaks = {}
+local peak_fade = 1
 local page = 1
+local last_snap = 0
+
+local function capture()
+  engine.capture(1)
+  last_snap = util.time()
+end
+
+local function snap_rate_id()
+  return params:get("snap_mode") == 3 and "snap_div" or "snap_rate"
+end
+
+local function pid(e)
+  return type(e[1]) == "function" and e[1]() or e[1]
+end
 local saved_monitor = nil
 
 local BASE = 50
@@ -40,6 +57,7 @@ local pages = {
   {{"resonance", "res"}, {"feedback", "fdbk"}},
   {{"mix", "mix"}, {"level", "level"}},
   {{"input_gain", "gain"}},
+  {{"snap_mode", "snap"}, {snap_rate_id, "rate"}},
 }
 local MOD_PAGE = #pages + 1
 
@@ -158,14 +176,31 @@ local function add_params()
   params:add{type = "binary", id = "freeze", name = "freeze", behavior = "toggle",
     default = 0, action = function(v) engine.freeze(v) end}
   params:add{type = "trigger", id = "capture", name = "capture slice",
-    action = function() engine.capture(1) end}
+    action = function() capture() end}
+
+  params:add_separator("auto snap")
+  params:add{type = "option", id = "snap_mode", name = "snap mode",
+    options = {"off", "free", "sync"}, default = 1}
+  params:add{type = "control", id = "snap_rate", name = "snap rate",
+    controlspec = controlspec.new(0.1, 20, "exp", 0, 1, "Hz"),
+    formatter = function(p) return string.format("%.2fHz", p:get()) end}
+  params:add{type = "option", id = "snap_div", name = "snap division",
+    options = {"4 bars", "2 bars", "1 bar", "1/2", "1/4", "1/8", "1/16"}, default = 5}
+  params:add{type = "control", id = "snap_chance", name = "snap chance",
+    controlspec = controlspec.new(0, 1, "lin", 0, 1), formatter = fmt_pct}
 
   params:add_separator("spectrum window")
   ctl("center", "center", controlspec.new(40, 12000, "exp", 0, 800, "Hz"), fmt_hz)
   ctl("width", "bandwidth", controlspec.new(0.1, 9, "lin", 0, 8, "oct"), fmt_oct)
   ctl("threshold", "threshold", controlspec.new(-90, -20, "lin", 0, -60, "dB"), fmt_db)
   ctl("stability", "stability", controlspec.new(0, 1, "lin", 0, 0.6), fmt_pct)
-  ctl("blur", "blur", controlspec.new(0, 0.99, "lin", 0, 0), fmt_pct)
+  ctl("blur", "blur", controlspec.new(0, 0.99, "lin", 0, 0), function(p)
+    if params:get("freeze") == 1 then
+      local v = p:get()
+      return string.format("%.1fs", v * v * 8)
+    end
+    return fmt_pct(p)
+  end)
 
   params:add_separator("envelope")
   ctl("attack", "attack", controlspec.new(0.005, 10, "exp", 0, 0.5, "s"), fmt_sec)
@@ -217,12 +252,17 @@ end
 
 function osc.event(path, args, from)
   if path == "/panspectra/spec" then
-    spectrum = args
+    spec_target = args
+    if params:get("freeze") == 0 then spectrum = args end
   elseif path == "/panspectra/peaks" then
     local n = math.floor(args[1] or 0)
     local t = {}
     for i = 1, n do
       t[i] = {f = args[2 * i], a = args[2 * i + 1]}
+    end
+    if params:get("freeze") == 1 then
+      prev_peaks = peak_fade < 0.5 and prev_peaks or peaks
+      peak_fade = 0
     end
     peaks = t
   elseif path == "/panspectra/lfo" then
@@ -230,12 +270,42 @@ function osc.event(path, args, from)
   end
 end
 
+local function morph_display(dt)
+  local mt = 0
+  if params:get("freeze") == 1 then
+    local b = params:get("blur")
+    mt = b * b * 8
+  end
+  if mt < 0.05 then
+    spectrum = spec_target
+    peak_fade = 1
+    prev_peaks = {}
+    return
+  end
+  local a = 1 - math.exp(-dt * 6.9 / mt)
+  local nxt = {}
+  for i = 1, #spec_target do
+    local cur = spectrum[i] or 0
+    nxt[i] = cur + (spec_target[i] - cur) * a
+  end
+  spectrum = nxt
+  peak_fade = peak_fade + (1 - peak_fade) * a
+  if peak_fade > 0.99 then
+    peak_fade = 1
+    prev_peaks = {}
+  end
+end
+
+local function each_peak(fn)
+  for _, pk in ipairs(prev_peaks) do fn(pk, 1 - peak_fade) end
+  for _, pk in ipairs(peaks) do fn(pk, peak_fade) end
+end
+
 local g = grid.connect()
 local grid_view = "spectrum"
 local grid_page = 1
 local menu_held = false
 local menu_chose = false
-local cap_flash = 0
 local popup, popup_time = nil, 0
 
 local grid_pages = {
@@ -245,6 +315,7 @@ local grid_pages = {
   {"pitch", "shift", "wave", "flatten", "glide"},
   {"filter_type", "cutoff", "resonance"},
   {"spread", "feedback", "mix", "input_gain", "level"},
+  {"snap_mode", snap_rate_id, "snap_chance"},
 }
 
 local function get_raw(id, p)
@@ -292,12 +363,12 @@ local function grid_key(x, y, z)
 
   local id = grid_pages[grid_page][y]
   if not id then return end
+  if type(id) == "function" then id = id() end
   local p = params:lookup_param(id)
   menu_chose = true
 
   if p.t == params.tTRIGGER then
     p:bang()
-    cap_flash = util.time()
   elseif p.t == params.tBINARY then
     params:set(id, 1 - params:get(id))
   elseif p.t == params.tOPTION then
@@ -333,20 +404,24 @@ local function grid_spectrum()
     end
   end
 
-  for _, pk in ipairs(peaks) do
-    local f = math.max(pk.f, 1)
-    local pos = util.clamp(math.log(f / 40) / math.log(300), 0, 1)
-    local col = util.clamp(math.floor(pos * 16) + 1, 1, 16)
-    local row = util.clamp(math.ceil(pk.a * 8), 1, 8)
-    g:led(col, 9 - row, 15)
-  end
+  each_peak(function(pk, w)
+    local lvl = math.floor(w * 15 + 0.5)
+    if lvl > 0 then
+      local f = math.max(pk.f, 1)
+      local pos = util.clamp(math.log(f / 40) / math.log(300), 0, 1)
+      local col = util.clamp(math.floor(pos * 16) + 1, 1, 16)
+      local row = util.clamp(math.ceil(pk.a * 8), 1, 8)
+      g:led(col, 9 - row, lvl)
+    end
+  end)
 end
 
 local function grid_editor()
-  for y, id in ipairs(grid_pages[grid_page]) do
+  for y, e in ipairs(grid_pages[grid_page]) do
+    local id = type(e) == "function" and e() or e
     local p = params:lookup_param(id)
     if p.t == params.tTRIGGER then
-      g:led(1, y, util.time() - cap_flash < 0.1 and 15 or 3)
+      g:led(1, y, util.time() - last_snap < 0.1 and 15 or 3)
     elseif p.t == params.tBINARY then
       g:led(1, y, params:get(id) == 1 and 15 or 3)
     elseif p.t == params.tOPTION then
@@ -379,6 +454,25 @@ local function grid_redraw()
   g:refresh()
 end
 
+local snap_div_beats = {16, 8, 4, 2, 1, 1 / 2, 1 / 4}
+
+local function snap_loop()
+  while true do
+    local mode = params:get("snap_mode")
+    if mode == 2 then
+      clock.sleep(1 / params:get("snap_rate"))
+    elseif mode == 3 then
+      clock.sync(snap_div_beats[params:get("snap_div")])
+    else
+      clock.sleep(0.05)
+    end
+    if mode > 1 and params:get("snap_mode") > 1 and params:get("freeze") == 1
+      and math.random() < params:get("snap_chance") then
+      capture()
+    end
+  end
+end
+
 -- init / cleanup -------------------------------------------------------------
 
 function init()
@@ -399,10 +493,12 @@ function init()
   clock.run(function()
     while true do
       clock.sleep(1 / 15)
+      morph_display(1 / 15)
       redraw()
       grid_redraw()
     end
   end)
+  clock.run(snap_loop)
 end
 
 function cleanup()
@@ -452,7 +548,7 @@ function enc(n, d)
     end
   else
     local e = pages[page][n - 1]
-    if e then adjust(e[1], d) end
+    if e then adjust(pid(e), d) end
   end
 end
 
@@ -465,7 +561,7 @@ function key(n, z)
     else
       k3_held = false
       -- a tap (no fine adjusting while held) captures a slice
-      if not k3_used then engine.capture(1) end
+      if not k3_used then capture() end
     end
   end
 end
@@ -516,13 +612,16 @@ local function draw_main()
   end
 
   -- resynthesized partials (post-transpose)
-  screen.level(15)
-  for _, p in ipairs(peaks) do
-    local x = math.floor(fx(p.f)) + 0.5
-    screen.move(x, BASE)
-    screen.line(x, BASE - math.max(2, p.a * H))
-  end
-  screen.stroke()
+  each_peak(function(p, w)
+    local lvl = math.floor(w * 15 + 0.5)
+    if lvl > 0 then
+      local x = math.floor(fx(p.f)) + 0.5
+      screen.level(lvl)
+      screen.move(x, BASE)
+      screen.line(x, BASE - math.max(2, p.a * H))
+      screen.stroke()
+    end
+  end)
 
   -- header
   local frozen = params:get("freeze") == 1
@@ -534,20 +633,24 @@ local function draw_main()
   screen.level(frozen and 15 or 4)
   screen.move(127, 7)
   screen.text_right(frozen and "FROZEN" or "live")
+  if frozen and util.time() - last_snap < 0.1 then
+    screen.rect(91, 2, 3, 3)
+    screen.fill()
+  end
 
   -- page params
   local pg = pages[page]
   screen.level(15)
-  local function label(e) return e[2] .. (marked[e[1]] and "*" or "") end
+  local function label(e) return e[2] .. (marked[pid(e)] and "*" or "") end
   if popup and util.time() - popup_time < 1.5 then
     screen.move(64, 63)
     screen.text_center(popup)
   else
     screen.move(0, 63)
-    screen.text(label(pg[1]) .. " " .. params:string(pg[1][1]))
+    screen.text(label(pg[1]) .. " " .. params:string(pid(pg[1])))
     if pg[2] then
       screen.move(127, 63)
-      screen.text_right(label(pg[2]) .. " " .. params:string(pg[2][1]))
+      screen.text_right(label(pg[2]) .. " " .. params:string(pid(pg[2])))
     end
   end
 end
