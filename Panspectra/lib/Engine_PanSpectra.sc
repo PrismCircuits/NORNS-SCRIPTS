@@ -34,7 +34,7 @@ Engine_PanSpectra : CroneEngine {
 	var center = 800, width = 8, pitch = 0, shift = 0;
 	var blur = 0, threshDb = -60;
 	var glide = 0.05, stability = 0.6;
-	var attack = 0.15, release = 0.4, fade = 0.3;
+	var attack = 0.5, release = 1.0, fade = 0.3;
 
 	*new { arg context, doneCallback;
 		^super.new(context, doneCallback);
@@ -103,7 +103,7 @@ Engine_PanSpectra : CroneEngine {
 
 		SynthDef(\panspectra_bank, { |out, fb_bus, inL, inR, wbuf, mbus, wave = 0, alag = 0.05,
 			level = 0.5, spread = 0.7, mix = 1, pitch = 0, shift = 0, flatten = 0, scale = 0.3,
-			attack = 0.15, release = 0.4, fade = 0.3, ftype = 0, cutoff = 18000, res = 0.2|
+			attack = 0.5, release = 1.0, fade = 0.3, ftype = 0, cutoff = 18000, res = 0.2|
 			var freqs = NamedControl.kr(\freqs, Array.fill(maxVoices, 220));
 			var rels = NamedControl.kr(\rels, Array.fill(maxVoices, 0));
 			var lags = NamedControl.kr(\lags, Array.fill(maxVoices, 0.05));
@@ -126,7 +126,7 @@ Engine_PanSpectra : CroneEngine {
 			amps = (rels > 0) * rels.max(1e-6).pow(1 - flat) * scale;
 			// per-band volume envelope: 3-stage (S-curve) attack/release so fades
 			// start gently, then a symmetric "fade" that blends all band volumes
-			amps = Lag3UD.kr(amps, atk * 0.5, rel * 0.5);
+			amps = Lag3UD.kr(amps, atk, rel);
 			amps = Lag2.kr(amps, fd * 0.5);
 			sigs = VOsc.ar(wbuf + pos, freqs, 0, amps);
 			wet = Mix(sigs.collect { |sig, i|
@@ -264,7 +264,7 @@ Engine_PanSpectra : CroneEngine {
 	effRelease {
 		var r = (release * (2000 ** modOff[21])).clip(0.005, 10).max(this.ampLag);
 		var f = (fade * (10000 ** modOff[22])).clip(0.001, 10);
-		^(r + f) * 1.5 // allow for the S-curve tails
+		^(r + f) * 2.5 // allow for the S-curve tails
 	}
 
 	binHz { ^(context.server.sampleRate ? 48000) / fftSize }
@@ -421,7 +421,7 @@ Engine_PanSpectra : CroneEngine {
 		// 5. levels, normalized against a slowly decaying reference (no pumping)
 		maxA = 0;
 		maxVoices.do { |v| if(trackOn[v]) { maxA = maxA.max(trackA[v]) } };
-		refAmp = maxA.max(refAmp * 0.85).max(1e-6);
+		refAmp = maxA.max(refAmp * (0.5 ** (1 / (this.effRate * 1.5)))).max(1e-6);
 		count = trackOn.occurrencesOf(true);
 		baseLag = this.effGlide.max(0.5 / this.effRate);
 

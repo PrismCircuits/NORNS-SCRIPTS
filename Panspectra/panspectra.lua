@@ -168,8 +168,8 @@ local function add_params()
   ctl("blur", "blur", controlspec.new(0, 0.99, "lin", 0, 0), fmt_pct)
 
   params:add_separator("envelope")
-  ctl("attack", "attack", controlspec.new(0.005, 10, "exp", 0, 0.15, "s"), fmt_sec)
-  ctl("release", "release", controlspec.new(0.005, 10, "exp", 0, 0.4, "s"), fmt_sec)
+  ctl("attack", "attack", controlspec.new(0.005, 10, "exp", 0, 0.5, "s"), fmt_sec)
+  ctl("release", "release", controlspec.new(0.005, 10, "exp", 0, 1.0, "s"), fmt_sec)
   ctl("fade", "fade", controlspec.new(0.001, 10, "exp", 0, 0.3, "s"), fmt_sec)
 
   params:add_separator("resynthesis")
