@@ -58,6 +58,7 @@ local pages = {
   {{"mix", "mix"}, {"level", "level"}},
   {{"input_gain", "gain"}},
   {{"snap_mode", "snap"}, {snap_rate_id, "rate"}},
+  {{"blur", "morph"}, {"snap_chance", "chance"}},
 }
 local MOD_PAGE = #pages + 1
 
@@ -315,7 +316,7 @@ local grid_pages = {
   {"pitch", "shift", "wave", "flatten", "glide"},
   {"filter_type", "cutoff", "resonance"},
   {"spread", "feedback", "mix", "input_gain", "level"},
-  {"snap_mode", snap_rate_id, "snap_chance"},
+  {"snap_mode", snap_rate_id, "blur", "snap_chance"},
 }
 
 local function get_raw(id, p)
