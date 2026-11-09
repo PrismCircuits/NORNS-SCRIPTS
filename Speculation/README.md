@@ -103,10 +103,14 @@ amp and filter envelopes, at a fixed grid velocity. Root and scale notes are
 lit; a held note lights every pad with the same pitch, as do drone and MIDI
 notes.
 
+The norns screen briefly shows the name of each pad's note as you press it.
+
 The GRID page appears in the menu when a grid is connected (and disappears
 when it is unplugged). The grid is found on any of ports 1-4.
 
 - grid keyboard: on / off
+- orientation: normal / rotated 180 / flip vertical / flip horizontal. If
+  low notes aren't at the bottom-left, change this until they are
 - lowest note: note of the bottom-left pad (default C2)
 - row interval: semitones per row (default a fourth)
 - key / scale lights: which notes are lit

@@ -50,6 +50,7 @@ local m
 local redraw_metro
 local grains = {}      -- visual grains
 local MAX_GRAINS = 64
+local show_notice -- defined with the screen code below
 local view = "home"     -- "home" (sample + grains), "menu" or "browse"
 local last_touch = 0
 local MENU_TIMEOUT = 5  -- seconds of no input before returning home
@@ -425,6 +426,16 @@ local function grid_enabled() return grid_present() and params:get("gridOn") == 
 local function grid_rows() return (g and g.rows and g.rows > 0) and g.rows or 8 end
 local function grid_cols() return (g and g.cols and g.cols > 0) and g.cols or 16 end
 
+-- physical pad -> keyboard layout position (and back; each mapping is its
+-- own inverse). "normal" = (1,1) top-left as monome numbers it.
+local function grid_orient(x, y)
+  local o = params:get("gridOrient")
+  if o == 2 then return grid_cols() + 1 - x, grid_rows() + 1 - y end -- rotated 180
+  if o == 3 then return x, grid_rows() + 1 - y end                   -- flipped vertically
+  if o == 4 then return grid_cols() + 1 - x, y end                   -- flipped horizontally
+  return x, y
+end
+
 local function grid_note(x, y)
   return params:get("gridBase") + (x - 1) + (grid_rows() - y) * params:get("gridRow")
 end
@@ -469,18 +480,21 @@ local function grid_redraw()
       elseif pc == root then lvl = 5
       elseif in_scale(pc) then lvl = scale_lvl end
       if note > 127 or note < 0 then lvl = 0 end
-      g:led(x, y, lvl)
+      local px, py = grid_orient(x, y)
+      g:led(px, py, lvl)
     end
   end
   g:refresh()
 end
 
-local function grid_key(x, y, z)
+local function grid_key(px, py, z)
+  local x, y = grid_orient(px, py)
   local k = x .. "," .. y
   if z == 1 then
     if params:get("gridOn") ~= 2 then return end
     local note = grid_note(x, y)
     if note < 0 or note > 127 then return end
+    show_notice(musicutil.note_num_to_name(note, true), 0.7)
     grid_keys[k] = note
     grid_count[note] = (grid_count[note] or 0) + 1
     note_on(note, params:get("gridVel"))
@@ -674,6 +688,9 @@ local function setup_params()
   end)
   params:add_number("gridDev", "grid device", 1, 4, 1)
   params:set_action("gridDev", function(v) connect_grid(v) end)
+  params:add_option("gridOrient", "orientation",
+    {"normal", "rotated 180", "flip vertical", "flip horizontal"}, 1)
+  params:set_action("gridOrient", function() grid_release_all() end)
   params:add_number("gridBase", "lowest note", 0, 72, 36, note_fmt)
   params:set_action("gridBase", function() grid_release_all() end)
   params:add_number("gridRow", "row interval", 1, 12, 5, function(p)
@@ -721,7 +738,7 @@ local function build_pages()
   }
   if grid_present() then
     table.insert(pages, {name = "GRID",
-      ids = {"gridOn", "gridBase", "gridRow", "gridKey", "gridScale", "gridVel",
+      ids = {"gridOn", "gridOrient", "gridBase", "gridRow", "gridKey", "gridScale", "gridVel",
         "kposOn", "kposSpan", "kposPitch"}})
   end
   for i = 1, #pages do sel[i] = sel[i] or 1 end
@@ -912,8 +929,8 @@ end
 
 local notice_text, notice_until = nil, 0
 
-local function show_notice(text)
-  notice_text, notice_until = text, util.time() + 2
+show_notice = function(text, dur)
+  notice_text, notice_until = text, util.time() + (dur or 2)
 end
 
 -- brief centered message (e.g. grid connected)
