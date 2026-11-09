@@ -247,8 +247,8 @@ local function voice_args(note)
   local key_pos = params:get("z" .. z .. "key")
   local ktrack = params:get("z" .. z .. "track")
   if params:get("kposOn") == 2 then
+    -- position only: notes always keep their own pitch
     pos_off = pos_off + ((note - params:get("gridBase")) / params:get("kposSpan")) % 1
-    if params:get("kposPitch") == 1 then ktrack = 0 end
   end
   return pitch_off, pos_off, key_pos, ktrack
 end
@@ -709,8 +709,6 @@ local function setup_params()
     return p:get() .. " st"
   end)
   params:set_action("kposSpan", function() refresh_voices() end)
-  params:add_option("kposPitch", "pitch", {"fixed", "tracks"}, 1)
-  params:set_action("kposPitch", function() refresh_voices() end)
 end
 
 local function build_pages()
@@ -739,7 +737,7 @@ local function build_pages()
   if grid_present() then
     table.insert(pages, {name = "GRID",
       ids = {"gridOn", "gridOrient", "gridBase", "gridRow", "gridKey", "gridScale", "gridVel",
-        "kposOn", "kposSpan", "kposPitch"}})
+        "kposOn", "kposSpan"}})
   end
   for i = 1, #pages do sel[i] = sel[i] or 1 end
   page = util.clamp(page, 1, #pages)

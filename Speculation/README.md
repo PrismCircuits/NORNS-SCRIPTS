@@ -115,10 +115,9 @@ when it is unplugged). The grid is found on any of ports 1-4.
 - row interval: semitones per row (default a fourth)
 - key / scale lights: which notes are lit
 - grid velocity: level of grid notes
-- note > pos: higher notes play later parts of the sample, like key
-  tracking that moves through the sample instead of pitch
+- note > pos: higher notes also play later parts of the sample, like key
+  tracking that moves through the sample. Notes always keep their pitch
 - pos span: semitones that cover the whole sample (default 24), then it wraps
-- pitch: fixed (every note at the sample's pitch) or tracks
 
 ## Also
 
