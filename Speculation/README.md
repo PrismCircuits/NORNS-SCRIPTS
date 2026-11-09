@@ -30,7 +30,7 @@ SuperCollider from starting.
 ## Controls
 
 - K2 tap: record on / off
-- K2 hold (0.5 s): browse and load a sample from `dust/audio`
+- K2 hold (0.5 s): open the sample library
 - K3: drone on / off
 - K1 hold + E2 / E3: position / scan speed
 - E1: open the menu, then change page
@@ -48,6 +48,18 @@ The full screen shows the sample and its grains:
 - the dim band around each playhead is the spray range
 - the tall line is the position setting; ticks at the top and bottom are
   each voice's playhead
+
+## Sample library
+
+Holding K2 opens one list of every audio file on the norns (wav, aif, aiff,
+flac): everything in `dust/audio` (tape, other scripts' recordings, sample
+packs), plus samples other scripts keep in `dust/data` and `dust/code`. The
+bottom line shows the selected file's folder.
+
+- E2: scroll, E3: scroll a page at a time
+- K3: load, K2: back
+
+It is rescanned each time it opens, so new recordings show up straight away.
 
 ## Recording
 

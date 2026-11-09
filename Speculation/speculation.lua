@@ -20,7 +20,6 @@
 engine.name = "Grainery"
 
 local musicutil = require "musicutil"
-local fileselect = require "fileselect"
 
 local SRC = {"none", "lfo1", "lfo2", "amp env", "filt env", "velocity",
   "modwheel", "aftertouch", "cv1", "cv2", "keytrack", "random"}
@@ -51,10 +50,9 @@ local m
 local redraw_metro
 local grains = {}      -- visual grains
 local MAX_GRAINS = 64
-local view = "home"     -- "home" (sample + grains) or "menu"
+local view = "home"     -- "home" (sample + grains), "menu" or "browse"
 local last_touch = 0
 local MENU_TIMEOUT = 5  -- seconds of no input before returning home
-local selecting = false -- file browser is open
 local K2_HOLD = 0.5     -- seconds K2 must be held to open the browser
 local k2_clock = nil
 
@@ -717,21 +715,116 @@ end
 local function touch() last_touch = util.time() end
 
 -- K2 hold: browse norns audio folder (dust/audio) and load a sample
-local function open_sample_browser()
-  if selecting then return end
-  selecting = true
-  local cur = params:get("sample")
-  local dir = (is_audio(cur) and cur:match("^(.*/)")) or _path.audio
-  fileselect.enter(dir, function(path)
-    selecting = false
-    if path and path ~= "cancel" and is_audio(path) then
-      params:set("sample", path)
+-- ---------- sample library browser (K2 hold) ----------
+-- one flat list of every audio file on the norns: dust/audio (tape, other
+-- scripts' recordings, sample packs), dust/data and dust/code (samples
+-- shipped with or saved by other scripts). rescanned each time it opens.
+
+local LIB_ROOTS = {"audio", "data", "code"}
+local LIB_ROWS = 6
+local lib_files, lib_sel, lib_prev_view = {}, 1, "home"
+
+local function scan_library()
+  local files = {}
+  local dust = _path.dust or "/home/we/dust/"
+  for _, root in ipairs(LIB_ROOTS) do
+    local cmd = "find '" .. dust .. root .. "' -type f -not -path '*/.*' \\( -iname '*.wav'"
+      .. " -o -iname '*.aif' -o -iname '*.aiff' -o -iname '*.flac' \\) 2>/dev/null | sort -f"
+    local h = io.popen(cmd)
+    if h then
+      for path in h:lines() do
+        local rel = path:sub(#dust + 1)
+        table.insert(files, {
+          path = path,
+          name = rel:match("([^/]+)$") or rel,
+          folder = rel:match("^(.*)/[^/]+$") or root,
+        })
+      end
+      h:close()
     end
-    touch()
-  end)
+  end
+  return files
+end
+
+local function open_sample_browser()
+  if view == "browse" then return end
+  lib_files = scan_library()
+  lib_sel = 1
+  local cur = params:get("sample")
+  for i, f in ipairs(lib_files) do
+    if f.path == cur then lib_sel = i; break end
+  end
+  lib_prev_view = view
+  view = "browse"
+end
+
+local function close_sample_browser()
+  view = lib_prev_view
+  touch()
+end
+
+local function browse_enc(n, d)
+  if #lib_files == 0 then return end
+  local step = n == 3 and LIB_ROWS or 1
+  lib_sel = util.clamp(lib_sel + d * step, 1, #lib_files)
+end
+
+local function browse_key(n, z)
+  if z ~= 1 then return end -- ignore releases (e.g. letting go of the K2 hold)
+  if n == 2 then
+    close_sample_browser()
+  elseif n == 3 then
+    local f = lib_files[lib_sel]
+    close_sample_browser()
+    if f then params:set("sample", f.path) end
+  end
+end
+
+local function trunc(str, max)
+  if #str <= max then return str end
+  return str:sub(1, max - 2) .. ".."
+end
+
+local function redraw_browse()
+  screen.level(15)
+  screen.move(0, 7)
+  screen.text("SAMPLES")
+  screen.level(4)
+  screen.move(127, 7)
+  screen.text_right(#lib_files > 0 and (lib_sel .. "/" .. #lib_files) or "0")
+  if #lib_files == 0 then
+    screen.level(6)
+    screen.move(64, 34)
+    screen.text_center("no audio files found")
+  else
+    local top = util.clamp(lib_sel - 2, 1, math.max(1, #lib_files - LIB_ROWS + 1))
+    for r = 0, LIB_ROWS - 1 do
+      local i = top + r
+      local f = lib_files[i]
+      if f then
+        local y = 16 + r * 8
+        if i == lib_sel then
+          screen.level(15)
+          screen.move(0, y)
+          screen.text(">")
+        end
+        screen.level(i == lib_sel and 15 or 4)
+        screen.move(6, y)
+        screen.text(trunc(f.name, 30))
+      end
+    end
+    -- folder of the selected file
+    screen.level(3)
+    screen.move(0, 63)
+    screen.text(trunc(lib_files[lib_sel].folder, 32))
+  end
+  screen.level(2)
+  screen.move(127, 63)
+  screen.text_right("K3 load")
 end
 
 function enc(n, d)
+  if view == "browse" then browse_enc(n, d) return end
   if view == "menu" then touch() end
   if alt then
     if n == 2 then params:delta("pos", d) elseif n == 3 then params:delta("scan", d) end
@@ -752,6 +845,11 @@ function enc(n, d)
 end
 
 function key(n, z)
+  if view == "browse" then
+    if n == 1 then alt = z == 1 end
+    browse_key(n, z)
+    return
+  end
   if view == "menu" then touch() end
   if n == 1 then
     alt = z == 1
@@ -860,7 +958,9 @@ function redraw()
     view = "home"
   end
 
-  if view == "home" then redraw_home(now) else redraw_menu(now) end
+  if view == "home" then redraw_home(now)
+  elseif view == "browse" then redraw_browse()
+  else redraw_menu(now) end
   draw_notice(now)
   screen.update()
 end
@@ -894,7 +994,7 @@ function init()
   end
   grid.remove = function() grid_release_all(); grid_changed("disconnected") end
   redraw_metro = metro.init(function()
-    if not selecting then redraw() end
+    redraw()
     -- grid: redraw when something changed (notes from midi/drone included)
     if grid_dirty then grid_dirty = false; grid_redraw() end
   end, 1 / 30, -1)
