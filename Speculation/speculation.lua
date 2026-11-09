@@ -258,23 +258,37 @@ local function start_voice(note, vel)
   return next_id
 end
 
+-- chord played by each key: the selected chord when "chord on keys" is on
+local function key_intervals()
+  if params:get("chordKeys") == 2 then return CHORDS[params:get("droneChord")][2] end
+  return {0}
+end
+
+-- held[note] = {ids = {voice per chord note}, vel = velocity}
+local function stop_held(note)
+  local h = held[note]
+  if not h then return end
+  for _, id in ipairs(h.ids) do engine.noteOff(id) end
+  held[note] = nil
+end
+
 local function note_on(note, vel)
-  if held[note] then engine.noteOff(held[note]) end
+  stop_held(note)
   sustained[note] = nil
-  held[note] = start_voice(note, vel)
+  local ids = {}
+  for i, iv in ipairs(key_intervals()) do ids[i] = start_voice(math.min(note + iv, 127), vel) end
+  held[note] = {ids = ids, vel = vel}
   update_gate()
 end
 
 local function note_off(note)
   if sustain then sustained[note] = true return end
-  if held[note] then engine.noteOff(held[note]); held[note] = nil end
+  stop_held(note)
   update_gate()
 end
 
 local function release_sustain()
-  for note in pairs(sustained) do
-    if held[note] then engine.noteOff(held[note]); held[note] = nil end
-  end
+  for note in pairs(sustained) do stop_held(note) end
   sustained = {}
   update_gate()
 end
@@ -292,7 +306,10 @@ end
 
 -- re-apply per-note settings to everything sounding (held notes + drone)
 local function refresh_voices()
-  for note, id in pairs(held) do retune_voice(id, note) end
+  local ivs = key_intervals()
+  for note, h in pairs(held) do
+    for i, id in ipairs(h.ids) do retune_voice(id, math.min(note + (ivs[i] or 0), 127)) end
+  end
   if #drone_ids > 0 then
     local root = params:get("droneRoot")
     for i, iv in ipairs(CHORDS[params:get("droneChord")][2]) do
@@ -301,24 +318,36 @@ local function refresh_voices()
   end
 end
 
+-- move a playing chord to new intervals: shared voices glide to their new
+-- notes, extra notes start, leftover voices release. returns the new ids.
+local function apply_chord(base, ids, vel, ivs)
+  local out = {}
+  for i, iv in ipairs(ivs) do
+    local n = math.min(base + iv, 127)
+    if ids[i] then
+      retune_voice(ids[i], n, vel)
+      out[i] = ids[i]
+    else
+      out[i] = start_voice(n, vel)
+    end
+  end
+  for i = #ivs + 1, #ids do engine.noteOff(ids[i]) end
+  return out
+end
+
 -- apply drone root / chord / velocity changes to a drone that is playing
 local function update_drone()
   mark_grid()
   if #drone_ids == 0 then return end
-  local root = params:get("droneRoot")
-  local vel = params:get("droneVel")
-  local ivs = CHORDS[params:get("droneChord")][2]
-  local ids = {}
-  for i, iv in ipairs(ivs) do
-    if drone_ids[i] then
-      retune_voice(drone_ids[i], root + iv, vel)
-      ids[i] = drone_ids[i]
-    else
-      ids[i] = start_voice(root + iv, vel)
-    end
-  end
-  for i = #ivs + 1, #drone_ids do engine.noteOff(drone_ids[i]) end
-  drone_ids = ids
+  drone_ids = apply_chord(params:get("droneRoot"), drone_ids, params:get("droneVel"),
+    CHORDS[params:get("droneChord")][2])
+end
+
+-- apply chord changes to keys being held (grid / midi)
+local function update_keys()
+  mark_grid()
+  local ivs = key_intervals()
+  for note, h in pairs(held) do h.ids = apply_chord(note, h.ids, h.vel, ivs) end
 end
 
 local function toggle_drone()
@@ -412,7 +441,10 @@ end
 
 local function sounding_notes()
   local on = {}
-  for note in pairs(held) do on[note] = true end
+  local ivs = key_intervals()
+  for note, h in pairs(held) do
+    for i in ipairs(h.ids) do on[math.min(note + (ivs[i] or 0), 127)] = true end
+  end
   if #drone_ids > 0 then
     local root = params:get("droneRoot")
     for _, iv in ipairs(CHORDS[params:get("droneChord")][2]) do on[root + iv] = true end
@@ -617,8 +649,10 @@ local function setup_params()
   params:set_action("droneRoot", function() update_drone() end)
   local chord_names = {}
   for i, c in ipairs(CHORDS) do chord_names[i] = c[1] end
-  params:add_option("droneChord", "drone chord", chord_names, 1)
-  params:set_action("droneChord", function() update_drone() end)
+  params:add_option("droneChord", "chord", chord_names, 1)
+  params:set_action("droneChord", function() update_drone(); update_keys() end)
+  params:add_option("chordKeys", "chord on keys", {"off", "on"}, 2)
+  params:set_action("chordKeys", function() update_keys() end)
   params:add_control("droneVel", "drone velocity", controlspec.new(0, 1, "lin", 0, 0.8, "", 0.01), pct)
   params:set_action("droneVel", function() update_drone() end)
 
@@ -683,7 +717,7 @@ local function build_pages()
     {name = "MATRIX", ids = mtx},
     {name = "FX", ids = {"drive", "crush", "dtime", "dfb", "dmix", "rsize", "rdamp", "rmix", "level"}},
     {name = "ZONES", ids = zones},
-    {name = "PLAY / REC", ids = {"droneRoot", "droneChord", "droneVel", "recLen", "recLoop"}},
+    {name = "PLAY / REC", ids = {"droneChord", "chordKeys", "droneRoot", "droneVel", "recLen", "recLoop"}},
   }
   if grid_present() then
     table.insert(pages, {name = "GRID",
