@@ -16,7 +16,7 @@ Engine_Grainery : CroneEngine {
 
 	alloc {
 		var server = context.server;
-		var lfoFn, sides, tilts;
+		var lfoFn, sides, tilts, startVoice;
 
 		luaAddr = NetAddr("127.0.0.1", 10111);
 		voices = Dictionary.new;
@@ -220,8 +220,10 @@ Engine_Grainery : CroneEngine {
 			Buffer.readChannel(server, path, channels: [0], action: { |b| this.swapBuffer(b) });
 		});
 
-		this.addCommand(\noteOn, "iffffff", { |msg|
-			var id = msg[1].asInteger, syn;
+		// start a voice; `extra` = [key, value, ...] per-voice overrides
+		// (sequencer parameter locks), applied after the global values
+		startVoice = { |id, note, vel, pitchOff, posOff, keyPos, ktrack, extra|
+			var syn;
 			if(voices[id].notNil) {
 				voices[id].set(\gate, -1.05); voices.removeAt(id); voiceOrder.remove(id);
 			};
@@ -233,14 +235,27 @@ Engine_Grainery : CroneEngine {
 			syn = Synth(\grainery_voice, pv.asKeyValuePairs ++ [
 				\out, fxBus.index, \buf, buf.bufnum, \envBase, envBase,
 				\scanBus, scanBus.index, \lfoBus, lfoBus.index, \ctlBus, ctlBus.index,
-				\id, id, \note, msg[2], \vel, msg[3], \pitchOff, msg[4],
-				\posOff, msg[5], \keyPos, msg[6], \ktrack, msg[7]
-			], voiceGroup);
+				\id, id, \note, note, \vel, vel, \pitchOff, pitchOff,
+				\posOff, posOff, \keyPos, keyPos, \ktrack, ktrack
+			] ++ (extra ? []), voiceGroup);
 			voices[id] = syn;
 			voiceOrder.add(id);
 			syn.onFree({
 				if(voices[id] === syn) { voices.removeAt(id); voiceOrder.remove(id) };
 			});
+		};
+
+		this.addCommand(\noteOn, "iffffff", { |msg|
+			startVoice.(msg[1].asInteger, msg[2], msg[3], msg[4], msg[5], msg[6], msg[7]);
+		});
+
+		// noteOn with locks: last arg is "key value key value ..."
+		this.addCommand(\noteOnL, "iffffffs", { |msg|
+			var words = msg[8].asString.split($ ).reject(_.isEmpty), extra = [];
+			(words.size div: 2).do { |i|
+				extra = extra ++ [words[i * 2].asSymbol, words[(i * 2) + 1].asFloat];
+			};
+			startVoice.(msg[1].asInteger, msg[2], msg[3], msg[4], msg[5], msg[6], msg[7], extra);
 		});
 
 		this.addCommand(\noteOff, "i", { |msg|

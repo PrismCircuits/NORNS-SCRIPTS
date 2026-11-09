@@ -33,6 +33,8 @@ SuperCollider from starting.
 - K2 hold (0.5 s): open the sample library
 - K3: drone on / off
 - K1 hold + E2 / E3: position / scan speed
+- K1 + K2: open / close the SEQ menu
+- K1 + K3: sequencer play / stop
 - E1: open the menu, then change page
 - E2 / E3 (in the menu): select / adjust
 
@@ -95,6 +97,48 @@ notes glide to their new pitch, new notes start and leftover notes release.
 A 4-note chord uses 4 voices per key, so raise polyphony (VOICE page) to
 hold several chords at once.
 
+## Sequencer
+
+A 16-step sequencer on the grid's top row, with parameter locks for every
+sound setting. It follows the norns clock (internal, MIDI, Link or crow:
+PARAMS > CLOCK).
+
+On the grid's top row (GRID page > top row: sequencer):
+
+- hold a step and play keys (grid or MIDI) to set its notes; several keys
+  make a chord, and the chord setting still applies on top
+- tap a step to switch it on / off
+- pressing a step selects it and opens the SEQ menu
+- lights: dim = empty, mid = notes, bright = on, brighter = on with locks,
+  full = playhead / held step
+
+### SEQ menu
+
+Its own menu, separate from the main one. E1 page, E2 select, E3 adjust.
+K1 + K2 leaves (or it closes after 5 s idle); K1 + K3 plays / stops.
+
+Page 1, SEQ:
+
+- edit step, play, notes, step on, step chance (probability)
+- step size (1/32 to 1 bar), length (1-16), direction (forward, reverse,
+  ping-pong, random), swing, gate
+- clear step locks / clear ALL locks / clear pattern: select, then K3
+
+The other pages (NOTE, GRAIN, VOICE, FILTER, LFO, MATRIX, FX, ZONES) are
+lock pages for the selected step. Turning E3 locks that setting on the step
+only; locked settings are marked `*` and shown bright, unlocked ones show the
+normal value dimmed.
+
+- K2: clear the selected lock
+- K3: clear every lock on this step
+- NOTE page: velocity, chord, chord on keys, note > pos, pos span per step
+
+Locks on sound settings apply only to that step's notes. Locks on effects
+and output (FX page) are shared by everything, so they are applied while the
+step plays and put back at the next step that plays.
+
+The pattern and its locks are saved and loaded with each PSET.
+
 ## Grid (128)
 
 A LinnStrument-style keyboard: each pad to the right is a semitone higher,
@@ -109,6 +153,7 @@ The GRID page appears in the menu when a grid is connected (and disappears
 when it is unplugged). The grid is found on any of ports 1-4.
 
 - grid keyboard: on / off
+- top row: sequencer (16 steps) or keyboard
 - orientation: normal / rotated 180 / flip vertical / flip horizontal. If
   low notes aren't at the bottom-left, change this until they are
 - lowest note: note of the bottom-left pad (default C2)
