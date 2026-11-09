@@ -10,6 +10,7 @@
 -- K2 tap: record
 -- K2 hold: load sample
 -- K3 drone
+-- K1+K2 seq menu, K1+K3 seq play
 --
 -- grid 128: linnstrument-style
 -- keyboard (rows = 4ths)
@@ -51,7 +52,7 @@ local redraw_metro
 local grains = {}      -- visual grains
 local MAX_GRAINS = 64
 local show_notice -- defined with the screen code below
-local view = "home"     -- "home" (sample + grains), "menu" or "browse"
+local view = "home"     -- "home" (sample + grains), "menu", "browse" or "seq"
 local last_touch = 0
 local MENU_TIMEOUT = 5  -- seconds of no input before returning home
 local K2_HOLD = 0.5     -- seconds K2 must be held to open the browser
@@ -72,15 +73,24 @@ local function note_fmt(p)
   return musicutil.note_num_to_name(v, true)
 end
 
+-- param id -> function(value) returning the engine key and engine value.
+-- used by normal param changes and by sequencer parameter locks, so a
+-- lock always behaves exactly like turning the knob.
+local ENGINE_MAP = {}
+
+local function send_param(id, v) engine.param(ENGINE_MAP[id](v)) end
+
 local function ctl(id, name, min, max, warp, default, units, quantum, fmt)
   params:add_control(id, name,
     controlspec.new(min, max, warp, 0, default, units or "", quantum), fmt)
-  params:set_action(id, function(v) engine.param(id, v) end)
+  ENGINE_MAP[id] = function(v) return id, v end
+  params:set_action(id, function(v) send_param(id, v) end)
 end
 
 local function opt(id, name, list, default)
   params:add_option(id, name, list, default)
-  params:set_action(id, function(v) engine.param(id, v - 1) end)
+  ENGINE_MAP[id] = function(v) return id, v - 1 end
+  params:set_action(id, function(v) send_param(id, v) end)
 end
 
 local function is_audio(path)
@@ -231,32 +241,70 @@ local function update_gate()
   crow.output[1].volts = on and 5 or 0
 end
 
-local function zone_for(note)
-  if note < params:get("split1") then return 1
-  elseif note < params:get("split2") then return 2
+local function pget(id) return params:get(id) end
+
+local function zone_for(note, get)
+  get = get or pget
+  if note < get("split1") then return 1
+  elseif note < get("split2") then return 2
   else return 3 end
 end
 
 -- per-note voice settings: zone offsets, plus "note > position" mode,
 -- where higher notes read further into the sample (lowest grid note =
 -- sample start, `kposSpan` semitones = the whole sample, then it wraps)
-local function voice_args(note)
-  local z = zone_for(note)
-  local pitch_off = params:get("z" .. z .. "pitch")
-  local pos_off = params:get("z" .. z .. "pos")
-  local key_pos = params:get("z" .. z .. "key")
-  local ktrack = params:get("z" .. z .. "track")
-  if params:get("kposOn") == 2 then
+local function voice_args(note, get)
+  get = get or pget
+  local z = zone_for(note, get)
+  local pitch_off = get("z" .. z .. "pitch")
+  local pos_off = get("z" .. z .. "pos")
+  local key_pos = get("z" .. z .. "key")
+  local ktrack = get("z" .. z .. "track")
+  if get("kposOn") == 2 then
     -- position only: notes always keep their own pitch
-    pos_off = pos_off + ((note - params:get("gridBase")) / params:get("kposSpan")) % 1
+    pos_off = pos_off + ((note - params:get("gridBase")) / get("kposSpan")) % 1
   end
   return pitch_off, pos_off, key_pos, ktrack
 end
 
-local function start_voice(note, vel)
+-- `get` / `extra` come from sequencer steps: lock-aware param reader and
+-- per-voice engine overrides ("key value key value ...")
+local function start_voice(note, vel, get, extra)
   next_id = next_id + 1
-  engine.noteOn(next_id, note, vel, voice_args(note))
+  local a, b, c, d = voice_args(note, get)
+  if extra and extra ~= "" then
+    engine.noteOnL(next_id, note, vel, a, b, c, d, extra)
+  else
+    engine.noteOn(next_id, note, vel, a, b, c, d)
+  end
   return next_id
+end
+
+-- ---------- sequencer state ----------
+-- 16 steps. each step: on, notes (base notes; chord applied on playback),
+-- locks (param id -> value, only for locked params) and probability.
+
+local seq = {
+  steps = {}, pos = 0, dir = 1, count = 0, running = false, clock = nil,
+  sel = 1,          -- step being edited in the SEQ menu
+  held = nil,       -- step held on the grid
+  held_t = 0, entered = false,
+  voices = {},      -- sounding sequencer voice ids
+  sounding = {},    -- note -> count, for grid lights
+  globals = {},     -- param ids whose global (shared) lock is applied
+}
+
+local function seq_new_step() return {on = false, notes = {}, locks = {}, prob = 1} end
+for i = 1, 16 do seq.steps[i] = seq_new_step() end
+
+-- while a grid step is held, keys played (grid or midi) become its notes
+local function seq_enter_note(note)
+  if not seq.held then return end
+  local st = seq.steps[seq.held]
+  if not seq.entered then st.notes = {}; seq.entered = true end
+  for _, n in ipairs(st.notes) do if n == note then return end end
+  table.insert(st.notes, note)
+  st.on = true
 end
 
 -- chord played by each key: the selected chord when "chord on keys" is on
@@ -274,6 +322,7 @@ local function stop_held(note)
 end
 
 local function note_on(note, vel)
+  seq_enter_note(note)
   stop_held(note)
   sustained[note] = nil
   local ids = {}
@@ -349,6 +398,151 @@ local function update_keys()
   mark_grid()
   local ivs = key_intervals()
   for note, h in pairs(held) do h.ids = apply_chord(note, h.ids, h.vel, ivs) end
+end
+
+-- ---------- sequencer playback ----------
+
+local SEQ_DIVS = {{"1/32", 1 / 8}, {"1/16", 1 / 4}, {"1/8", 1 / 2}, {"1/4", 1}, {"1/2", 2}, {"1 bar", 4}}
+local SEQ_DIRS = {"forward", "reverse", "ping-pong", "random"}
+
+-- params the script itself uses when starting notes (lockable per step)
+local LUA_LOCKS = {gridVel = true, droneChord = true, chordKeys = true,
+  kposOn = true, kposSpan = true, split1 = true, split2 = true}
+for z = 1, 3 do
+  for _, k in ipairs({"pitch", "pos", "key", "track"}) do LUA_LOCKS["z" .. z .. k] = true end
+end
+-- engine params shared by every voice (effects / output): a lock on these
+-- is applied while its step plays and restored at the next triggered step
+local GLOBAL_LOCKS = {drive = true, crush = true, dtime = true, dfb = true, dmix = true,
+  rsize = true, rdamp = true, rmix = true, level = true}
+-- per-voice, but also drive the free-running scan / lfos: set both ways
+local BOTH_LOCKS = {scan = true, l1shape = true, l1rate = true, l2shape = true,
+  l2rate = true, l12x = true}
+
+local function lockable(id) return ENGINE_MAP[id] ~= nil or LUA_LOCKS[id] == true end
+
+local function seq_div() return SEQ_DIVS[params:get("seqDiv")][2] end
+
+local function seq_release(ids, notes)
+  for _, id in ipairs(ids) do
+    if seq.voices[id] then engine.noteOff(id); seq.voices[id] = nil end
+  end
+  for _, n in ipairs(notes) do
+    seq.sounding[n] = (seq.sounding[n] or 1) - 1
+    if seq.sounding[n] <= 0 then seq.sounding[n] = nil end
+  end
+  mark_grid()
+end
+
+local function seq_apply_globals(locks)
+  for id in pairs(seq.globals) do
+    if locks[id] == nil then send_param(id, params:get(id)); seq.globals[id] = nil end
+  end
+  for id, v in pairs(locks) do
+    if GLOBAL_LOCKS[id] or BOTH_LOCKS[id] then send_param(id, v); seq.globals[id] = true end
+  end
+end
+
+local function seq_voice_extra(locks)
+  local parts = {}
+  for id, v in pairs(locks) do
+    if ENGINE_MAP[id] and not GLOBAL_LOCKS[id] then
+      local k, val = ENGINE_MAP[id](v)
+      parts[#parts + 1] = k .. " " .. val
+    end
+  end
+  return table.concat(parts, " ")
+end
+
+local function seq_play_step(i)
+  local st = seq.steps[i]
+  if not st or not st.on or #st.notes == 0 then return end
+  if st.prob < 1 and math.random() > st.prob then return end
+  local L = st.locks
+  seq_apply_globals(L)
+  local get = function(id)
+    local v = L[id]
+    if v == nil then return params:get(id) end
+    return v
+  end
+  local vel = get("gridVel")
+  local ivs = get("chordKeys") == 2 and CHORDS[get("droneChord")][2] or {0}
+  local extra = seq_voice_extra(L)
+  local ids, notes = {}, {}
+  for _, n in ipairs(st.notes) do
+    for _, iv in ipairs(ivs) do
+      local nn = math.min(n + iv, 127)
+      local id = start_voice(nn, vel, get, extra)
+      ids[#ids + 1] = id
+      notes[#notes + 1] = nn
+      seq.voices[id] = true
+      seq.sounding[nn] = (seq.sounding[nn] or 0) + 1
+    end
+  end
+  local gate = clock.get_beat_sec() * seq_div() * params:get("seqGate")
+  clock.run(function() clock.sleep(gate); seq_release(ids, notes) end)
+end
+
+local function seq_advance()
+  local len = params:get("seqLen")
+  local d = params:get("seqDir")
+  if d == 1 then
+    seq.pos = seq.pos % len + 1
+  elseif d == 2 then
+    seq.pos = seq.pos - 1
+    if seq.pos < 1 or seq.pos > len then seq.pos = len end
+  elseif d == 3 then
+    if len == 1 then seq.pos = 1 else
+      local nxt = seq.pos + seq.dir
+      if nxt > len or nxt < 1 then seq.dir = -seq.dir; nxt = seq.pos + seq.dir end
+      seq.pos = util.clamp(nxt, 1, len)
+    end
+  else
+    seq.pos = math.random(len)
+  end
+end
+
+local function seq_loop()
+  while true do
+    clock.sync(seq_div())
+    seq_advance()
+    seq.count = seq.count + 1
+    local sw = params:get("seqSwing")
+    if sw > 0 and seq.count % 2 == 0 then
+      clock.sleep(clock.get_beat_sec() * seq_div() * sw * 0.5)
+    end
+    seq_play_step(seq.pos)
+    mark_grid()
+  end
+end
+
+local function seq_start()
+  if seq.running then return end
+  seq.running, seq.pos, seq.dir, seq.count = true, 0, 1, 0
+  seq.clock = clock.run(seq_loop)
+  mark_grid()
+end
+
+local function seq_stop()
+  if not seq.running then return end
+  seq.running = false
+  if seq.clock then clock.cancel(seq.clock); seq.clock = nil end
+  for id in pairs(seq.voices) do engine.noteOff(id) end
+  seq.voices, seq.sounding = {}, {}
+  seq_apply_globals({})
+  seq.pos = 0
+  mark_grid()
+end
+
+local function seq_clear_all_locks()
+  for _, st in ipairs(seq.steps) do st.locks = {} end
+  seq_apply_globals({})
+end
+
+local function seq_clear_pattern()
+  for i = 1, 16 do seq.steps[i] = seq_new_step() end
+  seq_apply_globals({})
+  mark_grid()
 end
 
 local function toggle_drone()
@@ -450,8 +644,11 @@ local function in_scale(pc)
   return false
 end
 
+local function seq_row_on() return params:get("seqRow") == 2 end
+
 local function sounding_notes()
   local on = {}
+  for n in pairs(seq.sounding) do on[n] = true end
   local ivs = key_intervals()
   for note, h in pairs(held) do
     for i in ipairs(h.ids) do on[math.min(note + (ivs[i] or 0), 127)] = true end
@@ -463,23 +660,74 @@ local function sounding_notes()
   return on
 end
 
+-- top row: 16 steps. dim = empty, mid = has notes, bright = on,
+-- brighter = on with locks, full = playhead / held step
+local function seq_step_led(x)
+  local st = seq.steps[x]
+  if not st then return 0 end
+  local has_locks = next(st.locks) ~= nil
+  local lvl
+  if #st.notes == 0 then lvl = has_locks and 2 or 1
+  elseif st.on then lvl = has_locks and 10 or 7
+  else lvl = 3 end
+  if x > params:get("seqLen") then lvl = math.min(lvl, 1) end
+  if view == "seq" and x == seq.sel then lvl = math.max(lvl, 12) end
+  if (seq.running and x == seq.pos) or seq.held == x then lvl = 15 end
+  return lvl
+end
+
+-- press: select step + open SEQ menu; hold + play keys: set its notes;
+-- quick tap (no notes played): step on / off
+local function seq_grid_key(x, z)
+  if x > 16 then return end
+  if z == 1 then
+    seq.held, seq.held_t, seq.entered = x, util.time(), false
+    seq.sel = x
+    view = "seq"
+    last_touch = util.time()
+  elseif seq.held == x then
+    local st = seq.steps[x]
+    if not seq.entered and util.time() - seq.held_t < 0.3 then
+      if #st.notes > 0 then
+        st.on = not st.on
+      else
+        show_notice("hold step + play keys", 1.2)
+      end
+    end
+    seq.held = nil
+    last_touch = util.time()
+  end
+  grid_dirty = true
+end
+
 local function grid_redraw()
   if not g then return end
   if not grid_enabled() then g:all(0); g:refresh(); return end
   local on = sounding_notes()
   local root = params:get("gridKey") - 1
   local scale_lvl = params:get("gridScale") == 1 and 0 or 2
+  local seq_row = seq_row_on()
+  -- notes of the step being edited (SEQ menu open)
+  local step_notes = {}
+  if view == "seq" then
+    for _, n in ipairs(seq.steps[seq.sel].notes) do step_notes[n] = true end
+  end
   g:all(0)
   for x = 1, grid_cols() do
     for y = 1, grid_rows() do
-      local note = grid_note(x, y)
-      local pc = note % 12
       local lvl = 0
-      if grid_keys[x .. "," .. y] then lvl = 15
-      elseif on[note] then lvl = 9
-      elseif pc == root then lvl = 5
-      elseif in_scale(pc) then lvl = scale_lvl end
-      if note > 127 or note < 0 then lvl = 0 end
+      if seq_row and y == 1 then
+        lvl = seq_step_led(x)
+      else
+        local note = grid_note(x, y)
+        local pc = note % 12
+        if grid_keys[x .. "," .. y] then lvl = 15
+        elseif on[note] then lvl = 9
+        elseif step_notes[note] then lvl = 7
+        elseif pc == root then lvl = 5
+        elseif in_scale(pc) then lvl = scale_lvl end
+        if note > 127 or note < 0 then lvl = 0 end
+      end
       local px, py = grid_orient(x, y)
       g:led(px, py, lvl)
     end
@@ -489,6 +737,10 @@ end
 
 local function grid_key(px, py, z)
   local x, y = grid_orient(px, py)
+  if seq_row_on() and y == 1 then
+    if params:get("gridOn") == 2 or z == 0 then seq_grid_key(x, z) end
+    return
+  end
   local k = x .. "," .. y
   if z == 1 then
     if params:get("gridOn") ~= 2 then return end
@@ -586,9 +838,11 @@ local function setup_params()
 
   params:add_separator("gr_voice", "pitch / amp")
   params:add_number("tune", "tune", -24, 24, 0, function(p) return string.format("%+d st", p:get()) end)
-  params:set_action("tune", function(v) engine.param("tune", v) end)
+  ENGINE_MAP.tune = function(v) return "tune", v end
+  params:set_action("tune", function(v) send_param("tune", v) end)
   ctl("fine", "fine", -100, 100, "lin", 0, "ct", 0.005)
-  params:set_action("fine", function(v) engine.param("fine", v / 100) end)
+  ENGINE_MAP.fine = function(v) return "fine", v / 100 end
+  params:set_action("fine", function(v) send_param("fine", v) end)
   ctl("glide", "granular glide", 0, 5, "lin", 0, "s", 0.002)
   params:add_number("bendRange", "bend range", 0, 24, 2)
   ctl("sub", "sub-osc", 0, 1, "lin", 0, "", 0.01, pct)
@@ -625,12 +879,15 @@ local function setup_params()
   for i = 1, 8 do
     local d = MATRIX_DEFAULTS[i]
     params:add_option("m" .. i .. "src", i .. " source", SRC, d[1])
-    params:set_action("m" .. i .. "src", function(v) engine.param("msrc" .. (i - 1), v - 1) end)
+    ENGINE_MAP["m" .. i .. "src"] = function(v) return "msrc" .. (i - 1), v - 1 end
+    params:set_action("m" .. i .. "src", function(v) send_param("m" .. i .. "src", v) end)
     params:add_option("m" .. i .. "dst", i .. " dest", DST, d[2])
-    params:set_action("m" .. i .. "dst", function(v) engine.param("mdst" .. (i - 1), v - 1) end)
+    ENGINE_MAP["m" .. i .. "dst"] = function(v) return "mdst" .. (i - 1), v - 1 end
+    params:set_action("m" .. i .. "dst", function(v) send_param("m" .. i .. "dst", v) end)
     params:add_control("m" .. i .. "amt", i .. " amount",
       controlspec.new(-1, 1, "lin", 0, d[3], "", 0.005), bip)
-    params:set_action("m" .. i .. "amt", function(v) engine.param("mamt" .. (i - 1), v) end)
+    ENGINE_MAP["m" .. i .. "amt"] = function(v) return "mamt" .. (i - 1), v end
+    params:set_action("m" .. i .. "amt", function(v) send_param("m" .. i .. "amt", v) end)
   end
 
   params:add_separator("gr_fx", "fx")
@@ -680,6 +937,16 @@ local function setup_params()
   params:set_action("crowCv", function(v) setup_crow_cv(v == 2) end)
   params:add_option("crowGate", "crow out 1 gate", {"off", "on"}, 1)
 
+  params:add_separator("gr_seq", "sequencer")
+  local div_names = {}
+  for i, dv in ipairs(SEQ_DIVS) do div_names[i] = dv[1] end
+  params:add_option("seqDiv", "step size", div_names, 2)
+  params:add_number("seqLen", "length", 1, 16, 16)
+  params:set_action("seqLen", function() grid_dirty = true end)
+  params:add_option("seqDir", "direction", SEQ_DIRS, 1)
+  params:add_control("seqSwing", "swing", controlspec.new(0, 1, "lin", 0, 0, "", 0.01), pct)
+  params:add_control("seqGate", "gate", controlspec.new(0.05, 1, "lin", 0, 0.5, "", 0.01), pct)
+
   params:add_separator("gr_grid", "grid keyboard")
   params:add_option("gridOn", "grid keyboard", {"off", "on"}, 2)
   params:set_action("gridOn", function(v)
@@ -688,6 +955,8 @@ local function setup_params()
   end)
   params:add_number("gridDev", "grid device", 1, 4, 1)
   params:set_action("gridDev", function(v) connect_grid(v) end)
+  params:add_option("seqRow", "top row", {"keyboard", "sequencer"}, 2)
+  params:set_action("seqRow", function() grid_release_all() end)
   params:add_option("gridOrient", "orientation",
     {"normal", "rotated 180", "flip vertical", "flip horizontal"}, 1)
   params:set_action("gridOrient", function() grid_release_all() end)
@@ -736,7 +1005,7 @@ local function build_pages()
   }
   if grid_present() then
     table.insert(pages, {name = "GRID",
-      ids = {"gridOn", "gridOrient", "gridBase", "gridRow", "gridKey", "gridScale", "gridVel",
+      ids = {"gridOn", "seqRow", "gridOrient", "gridBase", "gridRow", "gridKey", "gridScale", "gridVel",
         "kposOn", "kposSpan"}})
   end
   for i = 1, #pages do sel[i] = sel[i] or 1 end
@@ -872,8 +1141,209 @@ local function redraw_browse()
   screen.text_right("K3 load")
 end
 
+-- ---------- SEQ menu ----------
+-- its own menu: page 1 = sequencer + step settings and clear actions;
+-- the other pages copy the sound pages, but E3 sets a lock on the selected
+-- step instead of the normal value.  K2 clears the selected lock, K3
+-- clears every lock on the step.  K1+K2 leaves, K1+K3 play / stop.
+
+local seq_pages, seq_page, seq_sel = {}, 1, {}
+local SEQ_ROWS = 5
+local LOCK_LABELS = {gridVel = "velocity", droneChord = "chord"}
+
+local function seq_count_locks(st)
+  local n = 0
+  for _ in pairs(st.locks) do n = n + 1 end
+  return n
+end
+
+local function seq_clear_step_locks()
+  seq.steps[seq.sel].locks = {}
+  show_notice("step " .. seq.sel .. " locks cleared", 1)
+  grid_dirty = true
+end
+
+local function build_seq_pages()
+  local items = {
+    {t = "step"}, {t = "run"}, {t = "notes"}, {t = "on"}, {t = "prob"},
+    {t = "param", id = "seqDiv"}, {t = "param", id = "seqLen"}, {t = "param", id = "seqDir"},
+    {t = "param", id = "seqSwing"}, {t = "param", id = "seqGate"},
+    {t = "act", name = "clear step locks", fn = seq_clear_step_locks},
+    {t = "act", name = "clear ALL locks", fn = function()
+      seq_clear_all_locks(); show_notice("all locks cleared", 1.2); grid_dirty = true end},
+    {t = "act", name = "clear pattern", fn = function()
+      seq_stop(); seq_clear_pattern(); show_notice("pattern cleared", 1.2) end},
+  }
+  seq_pages = {{name = "SEQ", items = items}}
+  local note_ids = {"gridVel", "droneChord", "chordKeys", "kposOn", "kposSpan"}
+  local function lock_page(name, ids)
+    local its = {}
+    for _, id in ipairs(ids) do
+      if lockable(id) and params.lookup[id] then its[#its + 1] = {t = "lock", id = id} end
+    end
+    if #its > 0 then seq_pages[#seq_pages + 1] = {name = name, items = its, locks = true} end
+  end
+  lock_page("NOTE", note_ids)
+  for _, pg in ipairs(pages) do
+    if pg.name ~= "PLAY / REC" and pg.name ~= "GRID" then lock_page(pg.name, pg.ids) end
+  end
+  for i = 1, #seq_pages do seq_sel[i] = seq_sel[i] or 1 end
+  seq_page = util.clamp(seq_page, 1, #seq_pages)
+end
+
+-- a param's display string / delta for a value other than its current one,
+-- using the param's own formatter and range (set silently, then restored)
+local function param_string_for(id, v)
+  local base = params:get(id)
+  params:set(id, v, true)
+  local str = params:string(id)
+  params:set(id, base, true)
+  return str
+end
+
+local function param_delta_for(id, v, d)
+  local p = params:lookup_param(id)
+  local base = params:get(id)
+  params:set(id, v, true)
+  if p.controlspec then
+    p:set_raw(p.raw + d * (p.controlspec.quantum or 0.01), true)
+  else
+    p:set(p:get() + d, true)
+  end
+  local new = params:get(id)
+  params:set(id, base, true)
+  return new
+end
+
+local function note_list(notes)
+  if #notes == 0 then return "-" end
+  local t = {}
+  for i, n in ipairs(notes) do
+    if i > 4 then t[#t + 1] = ".."; break end
+    t[#t + 1] = musicutil.note_num_to_name(n, true)
+  end
+  return table.concat(t, " ")
+end
+
+local function seq_item_text(it)
+  local st = seq.steps[seq.sel]
+  if it.t == "step" then return "edit step", tostring(seq.sel)
+  elseif it.t == "run" then return "play", seq.running and "playing" or "stopped"
+  elseif it.t == "notes" then return "notes", note_list(st.notes)
+  elseif it.t == "on" then return "step on", st.on and "on" or "off"
+  elseif it.t == "prob" then return "step chance", string.format("%.0f%%", st.prob * 100)
+  elseif it.t == "param" then return params:lookup_param(it.id).name, params:string(it.id)
+  elseif it.t == "act" then return it.name, "K3"
+  elseif it.t == "lock" then
+    local name = LOCK_LABELS[it.id] or params:lookup_param(it.id).name
+    local v = st.locks[it.id]
+    if v ~= nil then return name, param_string_for(it.id, v), true end
+    return name, params:string(it.id), false
+  end
+  return "", ""
+end
+
+local function seq_enc(n, d)
+  last_touch = util.time()
+  if n == 1 then
+    seq_page = util.clamp(seq_page + d, 1, #seq_pages)
+    return
+  end
+  local pg = seq_pages[seq_page]
+  if n == 2 then
+    seq_sel[seq_page] = util.clamp(seq_sel[seq_page] + d, 1, #pg.items)
+    return
+  end
+  local it = pg.items[seq_sel[seq_page]]
+  local st = seq.steps[seq.sel]
+  if it.t == "step" then seq.sel = util.clamp(seq.sel + d, 1, 16)
+  elseif it.t == "run" then if d > 0 then seq_start() else seq_stop() end
+  elseif it.t == "on" then st.on = d > 0
+  elseif it.t == "prob" then st.prob = util.clamp(st.prob + d * 0.01, 0, 1)
+  elseif it.t == "param" then params:delta(it.id, d)
+  elseif it.t == "lock" then
+    local cur = st.locks[it.id]
+    if cur == nil then cur = params:get(it.id) end
+    st.locks[it.id] = param_delta_for(it.id, cur, d)
+  end
+  grid_dirty = true
+end
+
+local function seq_key(n, z)
+  if z ~= 1 then return end
+  last_touch = util.time()
+  local pg = seq_pages[seq_page]
+  local it = pg.items[seq_sel[seq_page]]
+  local st = seq.steps[seq.sel]
+  if n == 2 then
+    if pg.locks then
+      st.locks[it.id] = nil          -- K2: clear this lock
+    else
+      view = "home"                  -- K2 on the SEQ page: leave
+    end
+  elseif n == 3 then
+    if pg.locks then
+      seq_clear_step_locks()         -- K3: clear every lock on the step
+    elseif it.t == "act" then it.fn()
+    elseif it.t == "run" then if seq.running then seq_stop() else seq_start() end
+    elseif it.t == "on" then st.on = not st.on end
+  end
+  grid_dirty = true
+end
+
+local function redraw_seq()
+  local pg = seq_pages[seq_page]
+  local st = seq.steps[seq.sel]
+  -- header
+  screen.level(15)
+  screen.move(0, 7)
+  screen.text(pg.locks and ("LOCK " .. pg.name) or "SEQ")
+  screen.level(seq.running and 15 or 4)
+  screen.move(127, 7)
+  screen.text_right((seq.running and "> " or "") .. "STEP " .. seq.sel)
+  -- step bar
+  for i = 1, 16 do
+    local lvl = seq_step_led(i)
+    if i == seq.sel then lvl = 15 end
+    screen.level(lvl)
+    screen.rect((i - 1) * 8, 10, 7, i == seq.sel and 3 or 2)
+    screen.fill()
+  end
+  -- rows
+  local s = seq_sel[seq_page]
+  local top = util.clamp(s - 2, 1, math.max(1, #pg.items - SEQ_ROWS + 1))
+  for r = 0, SEQ_ROWS - 1 do
+    local idx = top + r
+    local it = pg.items[idx]
+    if it then
+      local y = 22 + r * 8
+      local name, val, locked = seq_item_text(it)
+      local on_row = idx == s
+      screen.level(on_row and 15 or 4)
+      screen.move(0, y)
+      screen.text((on_row and "> " or "  ") .. name .. (locked and " *" or ""))
+      if pg.locks then
+        screen.level(locked and (on_row and 15 or 11) or (on_row and 6 or 2))
+      end
+      screen.move(127, y)
+      screen.text_right(val)
+    end
+  end
+  -- footer
+  screen.level(3)
+  screen.move(0, 63)
+  if pg.locks then
+    screen.text("K2 clr  K3 clr step")
+    screen.move(127, 63)
+    screen.text_right(seq_count_locks(st) .. " locks")
+  else
+    screen.text("E1 lock pages  K1+K2 exit")
+  end
+end
+
 function enc(n, d)
   if view == "browse" then browse_enc(n, d) return end
+  if view == "seq" then seq_enc(n, d) return end
   if view == "menu" then touch() end
   if alt then
     if n == 2 then params:delta("pos", d) elseif n == 3 then params:delta("scan", d) end
@@ -902,7 +1372,22 @@ function key(n, z)
   if view == "menu" then touch() end
   if n == 1 then
     alt = z == 1
-  elseif n == 2 then
+    return
+  end
+  -- K1+K2: open / close the SEQ menu, K1+K3: sequencer play / stop
+  if alt and z == 1 and (n == 2 or n == 3) then
+    if n == 2 then
+      view = (view == "seq") and "home" or "seq"
+      last_touch = util.time()
+    else
+      if seq.running then seq_stop() else seq_start() end
+      show_notice(seq.running and "seq play" or "seq stop", 0.8)
+    end
+    grid_dirty = true
+    return
+  end
+  if view == "seq" then seq_key(n, z) return end
+  if n == 2 then
     -- tap = record on/off, hold = open sample browser
     if z == 1 then
       if k2_clock then clock.cancel(k2_clock) end
@@ -922,7 +1407,8 @@ function key(n, z)
 end
 
 local function status_text()
-  return (recording and "REC " or "") .. (#drone_ids > 0 and "DRONE" or "")
+  return (recording and "REC " or "") .. (seq.running and "SEQ " or "")
+    .. (#drone_ids > 0 and "DRONE" or "")
 end
 
 local notice_text, notice_until = nil, 0
@@ -1003,12 +1489,15 @@ function redraw()
   end
   update_grains(now)
 
-  if view == "menu" and not alt and now - last_touch > MENU_TIMEOUT then
+  if (view == "menu" or (view == "seq" and not seq.held)) and not alt
+    and now - last_touch > MENU_TIMEOUT then
+    if view == "seq" then grid_dirty = true end
     view = "home"
   end
 
   if view == "home" then redraw_home(now)
   elseif view == "browse" then redraw_browse()
+  elseif view == "seq" then redraw_seq()
   else redraw_menu(now) end
   draw_notice(now)
   screen.update()
@@ -1024,11 +1513,28 @@ function init()
   build_pages()
   params:bang()
   build_pages() -- grid now connected by params:bang, add GRID page if present
+  build_seq_pages()
+  -- the pattern (notes, locks) is saved / loaded with each PSET
+  local function seq_file(pset) return (pset:gsub("%.pset$", "")) .. ".seq" end
+  params.action_write = function(filename) tab.save(seq.steps, seq_file(filename)) end
+  params.action_read = function(filename)
+    local ok, t = pcall(tab.load, seq_file(filename))
+    if not ok or type(t) ~= "table" then return end
+    seq_stop()
+    for i = 1, 16 do
+      local st = t[i] or {}
+      seq.steps[i] = {on = st.on == true, notes = st.notes or {}, locks = st.locks or {},
+        prob = st.prob or 1}
+    end
+    grid_dirty = true
+  end
+  params.action_delete = function(filename) os.remove(seq_file(filename)) end
   -- grid hotplug: show/hide GRID page and tell the player
   local function grid_changed(msg)
     clock.run(function()
       clock.sleep(0.2) -- let norns attach/detach the device first
       build_pages()
+      build_seq_pages()
       grid_dirty = true
       if msg == "connected" and not grid_present() then return end
       show_notice("grid " .. msg)
@@ -1051,6 +1557,7 @@ function init()
 end
 
 function cleanup()
+  seq_stop()
   if redraw_metro then redraw_metro:stop() end
   if g then g:all(0); g:refresh() end
   if params:get("crowGate") == 2 then crow.output[1].volts = 0 end
