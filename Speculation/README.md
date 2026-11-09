@@ -80,11 +80,20 @@ scan key sync.
 - spawn random: grain timing, from evenly spaced (0%) to fully random (100%),
   at the same average density
 
-## Drone
+## Chords
 
-K3 holds a drone at the drone root (PLAY / REC page). It starts on unison;
-changing the chord, root or velocity while it plays updates it straight away,
-without restarting the notes.
+The chord setting (PLAY / REC page) is used by both the drone and the
+keyboard. It starts on unison.
+
+- chord on keys (on by default): every note from the grid or MIDI plays the
+  chord built on that note
+- K3 holds a drone of the chord at the drone root
+
+Changing the chord while notes or the drone are playing updates them
+straight away: notes the old and new chords share keep playing, changed
+notes glide to their new pitch, new notes start and leftover notes release.
+A 4-note chord uses 4 voices per key, so raise polyphony (VOICE page) to
+hold several chords at once.
 
 ## Grid (128)
 
