@@ -25,9 +25,9 @@ local SRC = {"none", "lfo1", "lfo2", "amp env", "filt env", "velocity",
   "modwheel", "aftertouch", "cv1", "cv2", "keytrack", "random"}
 local DST = {"none", "position", "scan", "spray", "size", "density",
   "pitch", "pitch spray", "cutoff", "resonance", "pan", "amp", "spawn rand"}
-local MATRIX_DEFAULTS = { -- {src, dst, amt}
-  {2, 2, 0}, {3, 9, 0}, {7, 4, 0.5}, {8, 9, 0.5},
-  {9, 2, 0.5}, {10, 5, 0.5}, {1, 1, 0}, {1, 1, 0},
+local MATRIX_DEFAULTS = { -- {src, dst, amt}: all slots start empty
+  {1, 1, 0}, {1, 1, 0}, {1, 1, 0}, {1, 1, 0},
+  {1, 1, 0}, {1, 1, 0}, {1, 1, 0}, {1, 1, 0},
 }
 local CHORDS = {
   {"unison", {0}}, {"octaves", {0, 12}}, {"fifth", {0, 7}}, {"5th+oct", {0, 7, 12}},
