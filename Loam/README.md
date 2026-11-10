@@ -124,3 +124,16 @@ LEDs: dim = inside the loop, mid = trig, bright = trig with locks, full = playhe
 The script always opens with an empty pattern. Sounds, effects and mixer settings from your last session come back automatically.
 
 To keep a pattern, save a PSET (PARAMETERS > PSET > SAVE). That stores the steps and locks with it (`dust/data/Loam/pattern-N.data`), and loading the PSET brings them back.
+
+## No sound? MASTER > DIAG
+
+Turn E1 all the way left to MASTER, then press K2 until **DIAG** is lit. The page shows:
+
+- **ENGINE**: whether Loam's sound engine loaded.
+- **ENGINE COPIES**: how many `Engine_Loam.sc` files are installed under `dust/code`. Two copies, e.g. from an old `loam` folder next to `Loam`, make SuperCollider refuse to start, and every script goes silent. Keep one, delete the rest, then SYSTEM > RESTART. Loam also warns about this on screen when it starts.
+- **HITS RECEIVED**: how many hits the sound engine has received from the sequencer (or from K3 auditions).
+- **OUT**: the engine's live output level.
+- **K3: TEST TONE**: a short 440 Hz beep sent straight to the norns output, past every track and effect.
+
+If the test tone is silent too, check the norns LEVELS menu (the engine fader) and the output level.
+

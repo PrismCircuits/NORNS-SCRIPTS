@@ -43,7 +43,11 @@ local master_flash = 0
 local page = 1        -- 0 = master, 1..8 = track pages
 local sel = 1         -- track shown on the grid
 local cur_tab = 1     -- current track tab (SEQ/SND/FX/TRK), shared by all tracks
-local mtab = 1        -- master tab: 1 MIX, 2 FX
+local mtab = 1        -- master tab: 1 MIX, 2 FX, 3 DIAG
+local MTABS = {"MIX", "FX", "DIAG"}
+-- diagnostics: is the engine loaded, how many copies are installed, is sound coming out
+local diag = {amp = 0, hits = 0, engine_ok = false, copies = {}, tone_t = 0}
+local notice = nil    -- startup warning lines (any key dismisses)
 local mix_sel = 1
 local ksel = {}       -- selected knob per context
 local cursor = 1      -- SEQ cursor
@@ -745,6 +749,48 @@ local function draw_mixer()
   end
 end
 
+-- ===================================================================== diagnostics
+
+local function run_diag()
+  diag.engine_ok = type(engine.commands) == "table" and engine.commands["trig"] ~= nil
+  diag.copies = {}
+  local code = _path.code or "/home/we/dust/code/"
+  local ok, out = pcall(util.os_capture, "find " .. code .. " -name 'Engine_Loam.sc' 2>/dev/null", true)
+  for line in ((ok and out) or ""):gmatch("[^\n]+") do
+    diag.copies[#diag.copies + 1] = line:gsub("^" .. code, ""):gsub("/lib/Engine_Loam.sc$", "")
+  end
+  local lines = {}
+  if not diag.engine_ok then lines[#lines + 1] = "SOUND ENGINE DID NOT LOAD" end
+  if #diag.copies > 1 then
+    lines[#lines + 1] = #diag.copies .. " COPIES OF LOAM INSTALLED:"
+    for _, c in ipairs(diag.copies) do lines[#lines + 1] = "  " .. c end
+    lines[#lines + 1] = "keep one, delete the rest,"
+    lines[#lines + 1] = "then SYSTEM > RESTART"
+  end
+  if #lines > 0 then notice = lines end
+end
+
+local function draw_diag()
+  local function row(y, label, value, ok)
+    screen.level(5); screen.move(1, y); screen.text(label)
+    screen.level(ok == false and 15 or 10); screen.move(127, y); screen.text_right(value)
+  end
+  row(16, "ENGINE", diag.engine_ok and "LOADED" or "NOT LOADED", diag.engine_ok)
+  row(24, "ENGINE COPIES", tostring(#diag.copies) .. (#diag.copies > 1 and " (TOO MANY)" or ""), #diag.copies == 1)
+  row(32, "HITS RECEIVED", tostring(math.floor(diag.hits)), nil)
+  -- output meter
+  screen.level(5); screen.move(1, 41); screen.text("OUT")
+  screen.level(2); screen.rect(20.5, 36.5, 106, 5); screen.stroke()
+  local db = 20 * math.log(math.max(diag.amp, 1e-5), 10)
+  local w = util.clamp((db + 60) / 60, 0, 1) * 105
+  screen.level(15); screen.rect(21, 37, w, 4); screen.fill()
+  screen.level(5); screen.move(1, 52)
+  screen.text(playing and "SEQUENCER RUNNING" or "SEQUENCER STOPPED (K1+K2)")
+  local sent = util.time() - diag.tone_t < 1
+  screen.level(sent and 15 or 8); screen.move(1, 62)
+  screen.text(sent and "TONE SENT - HEAR IT?" or "K3: TEST TONE")
+end
+
 function redraw()
   if browsing then return end
   screen.clear()
@@ -763,10 +809,13 @@ function redraw()
   elseif page == 0 then
     if mtab == 1 then
       header("MIX " .. mix_sel .. " " .. S.fmt(S.FX[2], params:get(tid(mix_sel, "pan")))
-        .. " " .. S.fmt(S.FX[1], params:get(tid(mix_sel, "level"))), {"MIX", "FX"}, 1)
+        .. " " .. S.fmt(S.FX[1], params:get(tid(mix_sel, "level"))), MTABS, 1)
       draw_mixer()
+    elseif mtab == 3 then
+      header("MASTER", MTABS, 3)
+      draw_diag()
     else
-      header("MASTER", {"MIX", "FX"}, 2)
+      header("MASTER", MTABS, 2)
       local m = {}
       for _, sp in ipairs(S.MASTER) do m[sp.k] = params:get("m_" .. sp.k) end
       m.dbeats = S.DELAY_TIMES[m.dtime][2]
@@ -792,6 +841,14 @@ function redraw()
       local targets = cur_tab == 5 and {} or lfo_targets(t)
       draw_knobs(list, clamp_sel(ctx, list), function(en) return params:get(en.id), false, targets[en.sp.k] end)
     end
+  end
+  if notice then
+    screen.level(0); screen.rect(0, 9, 128, 55); screen.fill()
+    screen.level(15); screen.rect(0.5, 9.5, 127, 54); screen.stroke()
+    for n, line in ipairs(notice) do
+      screen.level(n == 1 and 15 or 10); screen.move(4, 9 + n * 8); screen.text(line)
+    end
+    screen.level(4); screen.move(124, 61); screen.text_right("any key")
   end
   if confirm then
     screen.level(0); screen.rect(10, 18, 108, 30); screen.fill()
@@ -861,6 +918,7 @@ local function set_page(p)
 end
 
 function enc(n, d)
+  if page == 0 and mtab == 3 and n > 1 then return end   -- DIAG page has no knobs
   if n == 1 then
     set_page(page + d)
     return
@@ -935,6 +993,7 @@ function key(n, z)
   if n == 1 then shift = z == 1; return end
   if z == 0 then return end
 
+  if notice then notice = nil; return end
   if confirm then
     if n == 3 then confirm.fn() end
     confirm = nil
@@ -947,7 +1006,7 @@ function key(n, z)
     elseif lock then
       lock = nil
     elseif page == 0 then
-      mtab = mtab % 2 + 1
+      mtab = mtab % #MTABS + 1
     else
       cur_tab = cur_tab % #TABS + 1
     end
@@ -968,6 +1027,9 @@ function key(n, z)
     if mtab == 1 then
       local id = tid(mix_sel, "mute")
       params:set(id, 3 - params:get(id))
+    elseif mtab == 3 then
+      engine.tone(440)
+      diag.tone_t = util.time()
     else
       reset_positions(tick_n)
     end
@@ -1052,6 +1114,12 @@ function init()
     if grid_dirty or playing then grid_redraw(); grid_dirty = false end
   end, 1 / 20)
   frame_metro:start()
+  -- diagnostics: engine output level + hits received, and a startup check
+  for name, field in pairs({out_amp = "amp", hits = "hits"}) do
+    local ok, p = pcall(function() return poll.set(name, function(v) diag[field] = v end) end)
+    if ok and p then p.time = 0.1; p:start() end
+  end
+  run_diag()
   start()
 end
 

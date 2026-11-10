@@ -8,6 +8,7 @@ Engine_Loam : CroneEngine {
 	var voiceGroup, fxGroup, trackGroups, chokeGroups, chokeSub;
 	var trackFx, master, returns, colorGroup, colorFx, fxState, returnsOff;
 	var lfoGroup, modGroup, lfoBus, lfoSynth, baseParams, mods, routes;
+	var outAmp = 0, hitsIn = 0, ampOSC;   // diagnostics, read by lua through polls
 	var trackParams, voiceDefs, buffers, voices;
 	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
@@ -285,6 +286,12 @@ Engine_Loam : CroneEngine {
 			Out.ar(out, (d * dlvl) + (rev * rlvl));
 		}).add;
 
+		// DIAG test tone: straight to the norns output, bypassing every track, effect and the master bus
+		SynthDef(\loam_tone, { |out=0, freq=440|
+			var env = EnvGen.kr(Env.linen(0.01, 0.6, 0.1), doneAction: 2);
+			Out.ar(out, (SinOsc.ar(freq) * 0.2 * env) ! 2);
+		}).add;
+
 		// master bus: dj filter -> compressor -> limiter
 		SynthDef(\loam_master, { |in=0, out=0, mfilter=0, cthresh=(-12), cratio=4, catk=0.01, crel=0.15, cgain=3, vol=0.8|
 			var sig = In.ar(in, 2);
@@ -297,6 +304,7 @@ Engine_Loam : CroneEngine {
 			ctl = (RunningSum.ar(sig.squared.sum * 0.5, 960) / 960).max(0).sqrt;
 			sig = Compander.ar(sig, ctl, cthresh.dbamp, 1, 1 / cratio, catk, crel) * cgain.dbamp;
 			sig = Limiter.ar(sig * vol, 0.97);
+			SendReply.kr(Impulse.kr(15), '/loam_amp', [Amplitude.kr(sig[0], 0.01, 0.3), Amplitude.kr(sig[1], 0.01, 0.3)]);
 			Out.ar(out, sig);
 		}).add;
 
@@ -369,6 +377,7 @@ Engine_Loam : CroneEngine {
 			var def = voiceDefs[t];
 			var target = trackGroups[t];
 			var args, synth, ftKey;
+			hitsIn = hitsIn + 1;
 			if((def != \loam_sample) || buffers[t].notNil, {
 				if(choke == 1, { trackGroups[t].set(\gate, 0) });
 				if(choke > 1, { chokeGroups[choke - 2].set(\gate, 0); target = chokeSub[choke - 2][t] });
@@ -456,6 +465,15 @@ Engine_Loam : CroneEngine {
 					if(old.notNil, { old.free });
 				});
 			});
+		});
+
+		// ---- diagnostics (MASTER > DIAG page)
+		ampOSC = OSCFunc({ |msg| outAmp = max(msg[3], msg[4]) }, '/loam_amp', s.addr);
+		this.addPoll(\out_amp, { outAmp });
+		this.addPoll(\hits, { hitsIn });
+		// tone(freq): test beep straight to the output
+		this.addCommand("tone", "f", { |msg|
+			Synth.tail(context.xg, \loam_tone, [\out, context.out_b, \freq, msg[1]]);
 		});
 
 		// sclear(track): drop the track's sample
@@ -561,6 +579,7 @@ Engine_Loam : CroneEngine {
 	}
 
 	free {
+		if(ampOSC.notNil, { ampOSC.free });
 		if(returnsOff.notNil, { returnsOff.stop });
 		lfoGroup.free;
 		mods.do({ |d| d.do({ |m| m[\bus].free }) });
