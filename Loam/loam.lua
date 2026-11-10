@@ -94,13 +94,13 @@ local function fire(t, i, audition)
   local locked = false
   for k, v in pairs(L) do
     local sp = S.BY_KEY[k]
-    if sp then engine.p(t, k, S.to_sc(sp, v)); locked = true end
+    if sp then engine.ps(t, k, S.to_sc(sp, v)); locked = true end
   end
   engine.trig(t, vel, dur, params:get(tid(t, "choke")) - 1)
   if locked then
     for k in pairs(L) do
       local sp = S.BY_KEY[k]
-      if sp then engine.p(t, k, S.to_sc(sp, params:get(tid(t, k)))) end
+      if sp then engine.ps(t, k, S.to_sc(sp, params:get(tid(t, k)))) end
     end
   end
   tr.flash = 4
