@@ -46,8 +46,40 @@ local cur_tab = 1     -- current track tab (SEQ/SND/FX/TRK), shared by all track
 local mtab = 1        -- master tab: 1 MIX, 2 FX, 3 DIAG
 local MTABS = {"MIX", "FX", "DIAG"}
 -- diagnostics: is the engine loaded, how many copies are installed, is sound coming out
-local diag = {amp = 0, hits = 0, engine_ok = false, copies = {}, tone_t = 0}
 local notice = nil    -- startup warning lines (any key dismisses)
+local diag = {amp = 0, hits = 0, engine_ok = false, copies = {}, tone_t = 0, errors = {}}
+
+-- the engine reports anything that failed while loading (or in a command) to us over OSC
+local function wrap_text(text, width)
+  local out, line = {}, ""
+  for word in tostring(text):gmatch("%S+") do
+    if #line + #word + 1 > width and #line > 0 then out[#out + 1] = line; line = word
+    else line = (#line > 0) and (line .. " " .. word) or word end
+  end
+  if #line > 0 then out[#out + 1] = line end
+  return out
+end
+
+local function show_errors()
+  if #diag.errors == 0 then return end
+  local lines = {"ENGINE ERROR (" .. #diag.errors .. "):"}
+  for _, l in ipairs(wrap_text(diag.errors[1], 28)) do
+    if #lines < 6 then lines[#lines + 1] = l end
+  end
+  lines[#lines + 1] = "send this to Claude"
+  notice = lines
+end
+
+if osc then
+  osc.event = function(path, args)
+    if path == "/loam/errors" then
+      diag.error_count = args[1]
+    elseif path == "/loam/error" then
+      diag.errors[args[1]] = args[2]
+      show_errors()
+    end
+  end
+end
 local mix_sel = 1
 local ksel = {}       -- selected knob per context
 local cursor = 1      -- SEQ cursor
@@ -754,10 +786,11 @@ end
 local function run_diag()
   diag.engine_ok = type(engine.commands) == "table" and engine.commands["trig"] ~= nil
   diag.copies = {}
-  local code = _path.code or "/home/we/dust/code/"
-  local ok, out = pcall(util.os_capture, "find " .. code .. " -name 'Engine_Loam.sc' 2>/dev/null", true)
+  -- SuperCollider compiles every .sc file anywhere in dust, so look in all of it
+  local dust = _path.dust or "/home/we/dust/"
+  local ok, out = pcall(util.os_capture, "find " .. dust .. " -name 'Engine_Loam.sc' 2>/dev/null", true)
   for line in ((ok and out) or ""):gmatch("[^\n]+") do
-    diag.copies[#diag.copies + 1] = line:gsub("^" .. code, ""):gsub("/lib/Engine_Loam.sc$", "")
+    diag.copies[#diag.copies + 1] = line:gsub("^" .. dust, ""):gsub("/lib/Engine_Loam.sc$", "")
   end
   local lines = {}
   if not diag.engine_ok then lines[#lines + 1] = "SOUND ENGINE DID NOT LOAD" end
@@ -768,6 +801,9 @@ local function run_diag()
     lines[#lines + 1] = "then SYSTEM > RESTART"
   end
   if #lines > 0 then notice = lines end
+  -- ask the engine to repeat any errors from loading (in case they arrived before we were listening)
+  if type(engine.commands) == "table" and engine.commands["errors"] then engine.errors(1) end
+  if #lines == 0 then show_errors() end
 end
 
 local function draw_diag()
@@ -778,13 +814,14 @@ local function draw_diag()
   row(16, "ENGINE", diag.engine_ok and "LOADED" or "NOT LOADED", diag.engine_ok)
   row(24, "ENGINE COPIES", tostring(#diag.copies) .. (#diag.copies > 1 and " (TOO MANY)" or ""), #diag.copies == 1)
   row(32, "HITS RECEIVED", tostring(math.floor(diag.hits)), nil)
+  row(48, "ENGINE ERRORS", tostring(#diag.errors) .. (#diag.errors > 0 and " (K1+K3)" or ""), #diag.errors == 0)
   -- output meter
   screen.level(5); screen.move(1, 41); screen.text("OUT")
   screen.level(2); screen.rect(20.5, 36.5, 106, 5); screen.stroke()
   local db = 20 * math.log(math.max(diag.amp, 1e-5), 10)
   local w = util.clamp((db + 60) / 60, 0, 1) * 105
   screen.level(15); screen.rect(21, 37, w, 4); screen.fill()
-  screen.level(5); screen.move(1, 52)
+  screen.level(5); screen.move(1, 55)
   screen.text(playing and "SEQUENCER RUNNING" or "SEQUENCER STOPPED (K1+K2)")
   local sent = util.time() - diag.tone_t < 1
   screen.level(sent and 15 or 8); screen.move(1, 62)
@@ -1017,6 +1054,10 @@ function key(n, z)
   if lock then
     local list = lock_list(lock.t)
     tracks[lock.t].steps[lock.i].locks[list[lsel].k] = nil
+    return
+  end
+  if page == 0 and shift and mtab == 3 and #diag.errors > 0 then
+    show_errors()   -- DIAG: K1+K3 shows the engine's error again
     return
   end
   if page == 0 and shift then

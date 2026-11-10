@@ -9,6 +9,7 @@ Engine_Loam : CroneEngine {
 	var trackFx, master, returns, colorGroup, colorFx, fxState, returnsOff;
 	var lfoGroup, modGroup, lfoBus, lfoSynth, baseParams, mods, routes;
 	var outAmp = 0, hitsIn = 0, ampOSC;   // diagnostics, read by lua through polls
+	var errors, failOSC;                  // anything that failed while loading, shown on the norns screen
 	var trackParams, voiceDefs, buffers, voices;
 	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
@@ -47,6 +48,11 @@ Engine_Loam : CroneEngine {
 
 		// ---------------------------------------------------------------- drums
 
+		errors = List.new;
+		// the audio server reports its own failures (e.g. a missing plugin) as /fail messages
+		failOSC = OSCFunc({ |msg| this.report("server", msg[1..].join(" ")) }, '/fail', s.addr);
+
+		try {
 		SynthDef(\loam_kick, { |kick_tune=48, kick_sweep=0.5, kick_stime=0.05, kick_decay=0.5, kick_click=0.3, kick_drive=0.2|
 			var t = age.();
 			var penv = exp((t * -4.6) / kick_stime.max(0.001));
@@ -57,7 +63,9 @@ Engine_Loam : CroneEngine {
 			sig = XFade2.ar(sig, (sig * (1 + (kick_drive * 10))).tanh, (kick_drive * 2) - 1);
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_kick", e) };
 
+		try {
 		SynthDef(\loam_snare, { |snare_tune=185, snare_decay=0.15, snare_snappy=0.7, snare_sdecay=0.22, snare_color=2500|
 			var t = age.();
 			var pe = EnvGen.kr(Env([1.25, 1], [0.03]));
@@ -69,7 +77,9 @@ Engine_Loam : CroneEngine {
 			sig = (body * 0.7) + nz;
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_snare", e) };
 
+		try {
 		SynthDef(\loam_clap, { |clap_tone=1200, clap_spread=0.011, clap_decay=0.25|
 			var t = age.();
 			var sp = clap_spread * 0.95;
@@ -83,7 +93,9 @@ Engine_Loam : CroneEngine {
 			var sig = HPF.ar(BPF.ar(WhiteNoise.ar, clap_tone, 0.6), 400) * 2.5 * (bursts + tail);
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_clap", e) };
 
+		try {
 		SynthDef(\loam_hat, { |hat_tune=40, hat_color=10000, hat_decay=0.06, hat_noise=0.2|
 			var t = age.();
 			var ratios = [2, 3, 4.16, 5.43, 6.79, 8.21];
@@ -93,7 +105,9 @@ Engine_Loam : CroneEngine {
 			sig = sig * attack.(0.001, t) * expDec.(hat_decay, t);
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_hat", e) };
 
+		try {
 		SynthDef(\loam_tom, { |tom_tune=110, tom_sweep=0.5, tom_decay=0.45, tom_noise=0.15|
 			var t = age.();
 			var penv = exp((t * -3) / (tom_decay * 0.6).max(0.001));
@@ -102,7 +116,9 @@ Engine_Loam : CroneEngine {
 			sig = sig + (LPF.ar(WhiteNoise.ar, tom_tune * 4) * EnvGen.ar(Env.perc(0.001, 0.04)) * tom_noise);
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_tom", e) };
 
+		try {
 		SynthDef(\loam_rim, { |rim_tune=1700, rim_decay=0.035, rim_body=0.5|
 			var t = age.();
 			var sig = LFTri.ar(rim_tune) + (Pulse.ar(rim_tune * 0.47) * rim_body * 0.6);
@@ -110,7 +126,9 @@ Engine_Loam : CroneEngine {
 			sig = sig + (BPF.ar(WhiteNoise.ar, rim_tune, 0.5) * EnvGen.ar(Env.perc(0.0002, 0.006)) * 1.5);
 			finishDrum.(sig * 0.8);
 		}).add;
+		} { |e| this.report("sound loam_rim", e) };
 
+		try {
 		SynthDef(\loam_bell, { |bell_tune=540, bell_ratio=1.48, bell_tone=2640, bell_decay=0.35|
 			var t = age.();
 			var sig = (Pulse.ar(bell_tune) + Pulse.ar(bell_tune * bell_ratio)) * 0.3;
@@ -119,9 +137,11 @@ Engine_Loam : CroneEngine {
 			sig = BPF.ar(sig, bell_tone, 0.4) * 4 * amp;
 			finishDrum.(sig);
 		}).add;
+		} { |e| this.report("sound loam_bell", e) };
 
 		// ---------------------------------------------------------------- synths
 
+		try {
 		4.do({ |ft|
 			SynthDef(("loam_synth_" ++ ft).asSymbol, { |dur=0.2, synth_note=36, synth_wave=2, synth_pw=0.5, synth_det=7,
 				synth_osc2=0.5, synth_sub=0.3, synth_ftype=0, synth_cutoff=800, synth_res=0.3,
@@ -152,7 +172,9 @@ Engine_Loam : CroneEngine {
 				finishStereo.(Pan2.ar(sig, lPan.clip(-1, 1)));
 			}).add;
 		});
+		} { |e| this.report("sound loam_synth", e) };
 
+		try {
 		SynthDef(\loam_fm, { |fm_note=60, fm_ratio=2, fm_index=2, fm_ienv=0.5, fm_fb=0, fm_atk=0.002, fm_decay=0.6|
 			var t = age.();
 			var freq = fm_note.midicps;
@@ -161,7 +183,9 @@ Engine_Loam : CroneEngine {
 			var env = attack.(fm_atk.max(0.0005), t) * expDec.(fm_decay, t);
 			finishDrum.(SinOsc.ar(freq + mod) * env * 0.6);
 		}).add;
+		} { |e| this.report("sound loam_fm", e) };
 
+		try {
 		4.do({ |ft|
 			SynthDef(("loam_sample_" ++ ft).asSymbol, { |buf=0, dur=0.2, smp_pitch=0, smp_start=0, smp_end=1, smp_rev=0, smp_mode=0,
 				smp_atk=0.002, smp_rel=0.05, smp_ftype=0, smp_cutoff=18000, smp_res=0.1|
@@ -197,6 +221,7 @@ Engine_Loam : CroneEngine {
 				Out.ar(\out.kr(0), (sig * env * \vel.kr(1)) ! 2);
 			}).add;
 		});
+		} { |e| this.report("sound loam_sample", e) };
 
 		// ---------------------------------------------------------------- fx
 
@@ -204,6 +229,7 @@ Engine_Loam : CroneEngine {
 
 		// 4 LFOs per track, written to a 4-channel control bus (value already x depth, -1..1)
 		// mode: 0 FREE (own rate), 1 RETRIG (restarts on the track's hits), 2 SYNC (tempo / division, re-aligned by lua)
+		try {
 		SynthDef(\loam_lfo, { |out=0, tempo=2|
 			var modes = \mode.kr([2, 2, 2, 2]);
 			var rates = \rate.kr([1, 1, 1, 1]);
@@ -236,9 +262,11 @@ Engine_Loam : CroneEngine {
 			});
 			Out.kr(out, outs);
 		}).add;
+		} { |e| this.report("sound loam_lfo", e) };
 
 		// one per modulated parameter: base value (the knob) + the LFOs routed to it, in the
 		// parameter's own normalized space (lin or exp), written to a control bus that voices / fx read
+		try {
 		SynthDef(\loam_mod, { |out=0, lfoBus=0, base=0, lo=0, hi=1, warp=0, quant=0, w0=0, w1=0, w2=0, w3=0|
 			var l = In.kr(lfoBus, 4);
 			var m = (l[0] * w0) + (l[1] * w1) + (l[2] * w2) + (l[3] * w3);
@@ -248,8 +276,10 @@ Engine_Loam : CroneEngine {
 			var v = Select.kr(warp, [lo + ((hi - lo) * n), lo.max(1e-6) * ((hi.max(1e-6) / lo.max(1e-6)) ** n)]);
 			Out.kr(out, Select.kr(quant, [v, v.round(1)]));
 		}).add;
+		} { |e| this.report("sound loam_mod", e) };
 
 		// optional per-track colour insert: only exists while DRIVE / BITS / S.RATE / FILTER are away from neutral
+		try {
 		SynthDef(\loam_trackcolor, { |bus=0, drive=0, bits=16, srate=48000, filter=0|
 			var sig = In.ar(bus, 2);
 			var f = Lag.kr(filter, 0.05);
@@ -261,8 +291,10 @@ Engine_Loam : CroneEngine {
 			sig = HPF.ar(sig, (20 * (2 ** (f.max(0) * 9))).clip(20, 20000));
 			ReplaceOut.ar(bus, sig);
 		}).add;
+		} { |e| this.report("sound loam_trackcolor", e) };
 
 		// always-on track strip: just level, mute, pan and the two sends (very light)
+		try {
 		SynthDef(\loam_trackfx, { |in=0, out=0, dlyBus=0, revBus=0, level=0.8, pan=0, mute=0, dly=0, rev=0|
 			var sig = In.ar(in, 2);
 			var amp = Lag.kr(level * (1 - mute), 0.02);
@@ -271,8 +303,10 @@ Engine_Loam : CroneEngine {
 			Out.ar(dlyBus, sig * dly);
 			Out.ar(revBus, sig * rev);
 		}).add;
+		} { |e| this.report("sound loam_trackfx", e) };
 
 		// delay + reverb returns: paused whenever no track sends to them (after the tails ring out)
+		try {
 		SynthDef(\loam_returns, { |dlyBus=0, revBus=0, out=0, dtime=0.375, dfb=0.45, dtone=4000, dlvl=0.7,
 			rsize=0.8, rdamp=0.5, rlvl=0.7|
 			var dIn = In.ar(dlyBus, 2);
@@ -285,14 +319,18 @@ Engine_Loam : CroneEngine {
 			rev = FreeVerb2.ar(rIn[0], rIn[1], 1, rsize, rdamp);
 			Out.ar(out, (d * dlvl) + (rev * rlvl));
 		}).add;
+		} { |e| this.report("sound loam_returns", e) };
 
 		// DIAG test tone: straight to the norns output, bypassing every track, effect and the master bus
+		try {
 		SynthDef(\loam_tone, { |out=0, freq=440|
 			var env = EnvGen.kr(Env.linen(0.01, 0.6, 0.1), doneAction: 2);
 			Out.ar(out, (SinOsc.ar(freq) * 0.2 * env) ! 2);
 		}).add;
+		} { |e| this.report("sound loam_tone", e) };
 
 		// master bus: dj filter -> compressor -> limiter
+		try {
 		SynthDef(\loam_master, { |in=0, out=0, mfilter=0, cthresh=(-12), cratio=4, catk=0.01, crel=0.15, cgain=3, vol=0.8|
 			var sig = In.ar(in, 2);
 			var f = Lag.kr(mfilter, 0.05);
@@ -312,34 +350,11 @@ Engine_Loam : CroneEngine {
 			SendReply.kr(Impulse.kr(15), '/loam_amp', [Amplitude.kr(sig[0], 0.01, 0.3), Amplitude.kr(sig[1], 0.01, 0.3)]);
 			Out.ar(out, sig);
 		}).add;
+		} { |e| this.report("sound loam_master", e) };
 
 		s.sync;
 
-		mixBus = Bus.audio(s, 2);
-		dlyBus = Bus.audio(s, 2);
-		revBus = Bus.audio(s, 2);
-		trackBus = Array.fill(8, { Bus.audio(s, 2) });
-
-		voiceGroup = Group.head(context.xg);
-		// LFOs and modulation mappers run first in each block, so voices / fx read fresh values
-		lfoGroup = Group.before(voiceGroup);
-		modGroup = Group.tail(lfoGroup);
-		trackGroups = Array.fill(8, { Group.tail(voiceGroup) });
-		chokeGroups = Array.fill(4, { Group.tail(voiceGroup) });
-		// one sub-group per track inside each choke group, so live knob changes reach only that track
-		chokeSub = Array.fill(4, { |c| Array.fill(8, { Group.tail(chokeGroups[c]) }) });
-		colorGroup = Group.after(voiceGroup);
-		fxGroup = Group.after(colorGroup);
-		colorFx = Array.newClear(8);
-		fxState = Array.fill(8, { (drive: 0, bits: 16, srate: 48000, filter: 0, dly: 0, rev: 0, level: 0.8, pan: 0) });
-
-		trackFx = Array.fill(8, { |i|
-			Synth(\loam_trackfx, [\in, trackBus[i], \out, mixBus, \dlyBus, dlyBus, \revBus, revBus], fxGroup)
-		});
-		returns = Synth.after(fxGroup, \loam_returns, [\dlyBus, dlyBus, \revBus, revBus, \out, mixBus]);
-		master = Synth.after(returns, \loam_master, [\in, mixBus, \out, context.out_b]);
-		returns.run(false);
-
+		// state first (plain language objects), so commands never meet nil even if a later part fails
 		trackParams = Array.fill(8, { IdentityDictionary.new });
 		voiceDefs = Array.fill(8, { \loam_kick });
 		buffers = Array.newClear(8);
@@ -347,15 +362,46 @@ Engine_Loam : CroneEngine {
 		baseParams = Array.fill(8, { IdentityDictionary.new });
 		mods = Array.fill(8, { IdentityDictionary.new });
 		routes = Array.fill(8, { Array.newClear(4) });
-		lfoBus = Array.fill(8, { Bus.control(s, 4) });
-		lfoSynth = Array.fill(8, { |i| Synth.head(lfoGroup, \loam_lfo, [\out, lfoBus[i].index]) });
-		// a track's LFO bank only runs while something on that track is routed to the engine
-		lfoSynth.do(_.run(false));
+		colorFx = Array.newClear(8);
+		fxState = Array.fill(8, { (drive: 0, bits: 16, srate: 48000, filter: 0, dly: 0, rev: 0, level: 0.8, pan: 0) });
+
+		try {
+			mixBus = Bus.audio(s, 2);
+			dlyBus = Bus.audio(s, 2);
+			revBus = Bus.audio(s, 2);
+			trackBus = Array.fill(8, { Bus.audio(s, 2) });
+			voiceGroup = Group.head(context.xg);
+			// LFOs and modulation mappers run first in each block, so voices / fx read fresh values
+			lfoGroup = Group.before(voiceGroup);
+			modGroup = Group.tail(lfoGroup);
+			trackGroups = Array.fill(8, { Group.tail(voiceGroup) });
+			chokeGroups = Array.fill(4, { Group.tail(voiceGroup) });
+			// one sub-group per track inside each choke group, so live knob changes reach only that track
+			chokeSub = Array.fill(4, { |c| Array.fill(8, { Group.tail(chokeGroups[c]) }) });
+			colorGroup = Group.after(voiceGroup);
+			fxGroup = Group.after(colorGroup);
+		} { |e| this.report("setup buses/groups", e) };
+
+		try {
+			trackFx = Array.fill(8, { |i|
+				Synth(\loam_trackfx, [\in, trackBus[i], \out, mixBus, \dlyBus, dlyBus, \revBus, revBus], fxGroup)
+			});
+			returns = Synth.after(fxGroup, \loam_returns, [\dlyBus, dlyBus, \revBus, revBus, \out, mixBus]);
+			master = Synth.after(returns, \loam_master, [\in, mixBus, \out, context.out_b]);
+			returns.run(false);
+		} { |e| this.report("setup mixer/master", e) };
+
+		try {
+			lfoBus = Array.fill(8, { Bus.control(s, 4) });
+			lfoSynth = Array.fill(8, { |i| Synth.head(lfoGroup, \loam_lfo, [\out, lfoBus[i].index]) });
+			// a track's LFO bank only runs while something on that track is routed to the engine
+			lfoSynth.do(_.run(false));
+		} { |e| this.report("setup lfos", e) };
 
 		// ---------------------------------------------------------------- commands
 
 		// p(track, key, value): store a voice parameter AND apply it to the track's sounding voices
-		this.addCommand("p", "isf", { |msg|
+		this.safeCommand("p", "isf", { |msg|
 			var t = msg[1].asInteger - 1;
 			var k = msg[2].asSymbol;
 			trackParams[t].put(k, msg[3]);
@@ -366,17 +412,17 @@ Engine_Loam : CroneEngine {
 		});
 
 		// ps(track, key, value): store only (per-step locks: the next voice reads it, sounding voices keep theirs)
-		this.addCommand("ps", "isf", { |msg|
+		this.safeCommand("ps", "isf", { |msg|
 			trackParams[msg[1].asInteger - 1].put(msg[2].asSymbol, msg[3]);
 		});
 
 		// voice(track, synthdef)
-		this.addCommand("voice", "is", { |msg|
+		this.safeCommand("voice", "is", { |msg|
 			voiceDefs[msg[1].asInteger - 1] = msg[2].asSymbol;
 		});
 
 		// trig(track, velocity, gate seconds, choke) choke: 0 off, 1 mono, 2-5 groups A-D
-		this.addCommand("trig", "iffi", { |msg|
+		this.safeCommand("trig", "iffi", { |msg|
 			var t = msg[1].asInteger - 1;
 			var choke = msg[4].asInteger;
 			var def = voiceDefs[t];
@@ -408,7 +454,7 @@ Engine_Loam : CroneEngine {
 
 		// fx(track, key, value): track insert / mixer
 		// fx(track, key, value): track strip, or the optional colour insert
-		this.addCommand("fx", "isf", { |msg|
+		this.safeCommand("fx", "isf", { |msg|
 			var t = msg[1].asInteger - 1;
 			var k = msg[2].asSymbol;
 			var v = msg[3];
@@ -424,7 +470,7 @@ Engine_Loam : CroneEngine {
 		});
 
 		// mfx(key, value): master bus (delay/reverb keys go to the returns)
-		this.addCommand("mfx", "sf", { |msg|
+		this.safeCommand("mfx", "sf", { |msg|
 			var k = msg[1].asSymbol;
 			if([\dtime, \dfb, \dtone, \dlvl, \rsize, \rdamp, \rlvl].includes(k), {
 				returns.set(k, msg[2]);
@@ -434,21 +480,21 @@ Engine_Loam : CroneEngine {
 		});
 
 		// lfo(track, lfo 1-4, key, value): mode / rate / div / depth / shape / phase
-		this.addCommand("lfo", "iisf", { |msg|
+		this.safeCommand("lfo", "iisf", { |msg|
 			lfoSynth[msg[1].asInteger - 1].seti(msg[3].asSymbol, msg[2].asInteger - 1, msg[4]);
 		});
 
 		// ltempo(beats per second): SYNC rate source
-		this.addCommand("ltempo", "f", { |msg| lfoSynth.do({ |l| l.set(\tempo, msg[1]) }) });
+		this.safeCommand("ltempo", "f", { |msg| lfoSynth.do({ |l| l.set(\tempo, msg[1]) }) });
 
 		// lsync(track, lfo 1-4): re-align a SYNC lfo to the start of its cycle (sent by lua on the grid)
-		this.addCommand("lsync", "ii", { |msg|
+		this.safeCommand("lsync", "ii", { |msg|
 			lfoSynth[msg[1].asInteger - 1].seti(\t_sync, msg[2].asInteger - 1, 1);
 		});
 
 		// lroute(track, lfo, key, kind, lo, hi, warp, quant, base): point an lfo at a parameter ("none" = off)
 		// kind: 0 voice param, 1 track strip, 2 colour insert, 3 sequencer (handled in lua)
-		this.addCommand("lroute", "iisiffiif", { |msg|
+		this.safeCommand("lroute", "iisiffiif", { |msg|
 			var t = msg[1].asInteger - 1, i = msg[2].asInteger - 1, k = msg[3].asSymbol, kind = msg[4].asInteger;
 			this.removeRoute(t, i);
 			if((k != \none) && (kind < 3), {
@@ -457,7 +503,7 @@ Engine_Loam : CroneEngine {
 		});
 
 		// sload(track, path): read channel 1 of a sound file into the track's buffer
-		this.addCommand("sload", "is", { |msg|
+		this.safeCommand("sload", "is", { |msg|
 			var t = msg[1].asInteger - 1;
 			var path = msg[2].asString;
 			if(File.exists(path), {
@@ -473,19 +519,28 @@ Engine_Loam : CroneEngine {
 		});
 
 		// ---- diagnostics (MASTER > DIAG page)
-		ampOSC = OSCFunc({ |msg| outAmp = max(msg[3], msg[4]) }, '/loam_amp', s.addr);
-		this.addPoll(\out_amp, { outAmp });
-		this.addPoll(\hits, { hitsIn });
+		try {
+			ampOSC = OSCFunc({ |msg| outAmp = max(msg[3], msg[4]) }, '/loam_amp', s.addr);
+			this.addPoll(\out_amp, { outAmp });
+			this.addPoll(\hits, { hitsIn });
+		} { |e| this.report("polls", e) };
 		// tone(freq): test beep straight to the output
-		this.addCommand("tone", "f", { |msg|
+		this.safeCommand("tone", "f", { |msg|
 			Synth.tail(context.xg, \loam_tone, [\out, context.out_b, \freq, msg[1]]);
 		});
 
 		// sclear(track): drop the track's sample
-		this.addCommand("sclear", "i", { |msg|
+		this.safeCommand("sclear", "i", { |msg|
 			var t = msg[1].asInteger - 1;
 			if(buffers[t].notNil, { buffers[t].free; buffers[t] = nil });
 		});
+
+		// errors that happened before lua was listening are sent again when lua asks
+		this.safeCommand("errors", "i", { |msg| this.sendErrors });
+		// server failures only matter while loading; afterwards e.g. releasing an already finished voice is normal
+		s.sync;
+		failOSC.free; failOSC = nil;
+		("Engine_Loam: loaded with " ++ errors.size ++ " error(s)").postln;
 	}
 
 	// create / update / remove a track's colour insert depending on whether any colour knob is in use
@@ -583,8 +638,28 @@ Engine_Loam : CroneEngine {
 		);
 	}
 
+	// an error while loading: keep going, log it, and tell the lua script so it can show it on screen
+	report { |what, err|
+		var text = what ++ ": " ++ (err.respondsTo(\errorString).if({ err.errorString }, { err.asString }));
+		errors.add(text);
+		("Engine_Loam ERROR " ++ text).postln;
+		this.sendErrors;
+	}
+
+	sendErrors {
+		var lua = NetAddr("127.0.0.1", 8888);
+		lua.sendMsg("/loam/errors", errors.size);
+		errors.do({ |t, i| lua.sendMsg("/loam/error", i + 1, t.asString.keep(200)) });
+	}
+
+	// like addCommand, but an error inside a command is caught and shown instead of failing silently
+	safeCommand { |name, format, func|
+		^this.addCommand(name, format, { |msg| try { func.(msg) } { |e| this.report("command " ++ name, e) } });
+	}
+
 	free {
 		if(ampOSC.notNil, { ampOSC.free });
+		if(failOSC.notNil, { failOSC.free });
 		if(returnsOff.notNil, { returnsOff.stop });
 		lfoGroup.free;
 		mods.do({ |d| d.do({ |m| m[\bus].free }) });

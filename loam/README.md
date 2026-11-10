@@ -133,6 +133,7 @@ Turn E1 all the way left to MASTER, then press K2 until **DIAG** is lit. The pag
 - **ENGINE COPIES**: how many `Engine_Loam.sc` files are installed under `dust/code`. Two copies, e.g. an old copy in another folder, make SuperCollider refuse to start, and every script goes silent. Keep one, delete the rest, then SYSTEM > RESTART. Loam also warns about this on screen when it starts.
 - **HITS RECEIVED**: how many hits the sound engine has received from the sequencer (or from K3 auditions).
 - **OUT**: the engine's live output level.
+- **ENGINE ERRORS**: anything that failed while the sound engine loaded. The engine keeps loading past a failure, so the script still starts and the error text appears on screen. K1+K3 shows it again.
 - **K3: TEST TONE**: a short 440 Hz beep sent straight to the norns output, past every track and effect.
 
 If the test tone is silent too, check the norns LEVELS menu (the engine fader) and the output level.
