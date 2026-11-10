@@ -3,6 +3,13 @@
 
 local D = {}
 
+-- norns draws a circle as an arc joined to the current point (e.g. the end of the last text),
+-- which leaves a stray line across the screen. start each circle on its own.
+local function circle(x, y, r)
+  screen.move(x + r, y)
+  screen.circle(x, y, r)
+end
+
 local PI = math.pi
 local A0, A1 = PI * 0.75, PI * 2.25 -- knob sweep: 7 o'clock to 5 o'clock
 
@@ -51,7 +58,7 @@ end
 -- each engine draws its steps differently on the SEQ page (cell is 7 x 5)
 
 local G = {}
-G.kick = function(x, y) screen.circle(x + 3.5, y + 2.5, 2.5); screen.fill() end
+G.kick = function(x, y) circle(x + 3.5, y + 2.5, 2.5); screen.fill() end
 G.snare = function(x, y)
   screen.rect(x, y, 7, 5); screen.fill()
   screen.level(0); screen.rect(x + 2, y + 2, 3, 1); screen.fill()
@@ -60,7 +67,7 @@ G.clap = function(x, y)
   screen.rect(x, y, 1, 5); screen.rect(x + 3, y, 1, 5); screen.rect(x + 6, y, 1, 5); screen.fill()
 end
 G.hat = function(x, y) screen.rect(x + 2, y, 3, 5); screen.fill() end
-G.tom = function(x, y) screen.circle(x + 3.5, y + 2.5, 2); screen.stroke() end
+G.tom = function(x, y) circle(x + 3.5, y + 2.5, 2); screen.stroke() end
 G.rim = function(x, y) screen.move(x, y + 5); screen.line(x + 7, y); screen.stroke() end
 G.bell = function(x, y)
   screen.move(x + 2, y); screen.line(x + 5, y); screen.line(x + 7, y + 5); screen.line(x, y + 5)
@@ -159,8 +166,8 @@ end
 V.tom = function(v)
   local tune, sweep, decay = v("tom_tune"), v("tom_sweep"), v("tom_decay")
   local r = util.linlin(50, 400, 10, 4, tune)
-  screen.level(12); screen.circle(14, MID, r); screen.stroke()
-  screen.level(4); screen.circle(14, MID, r + 2); screen.stroke()
+  screen.level(12); circle(14, MID, r); screen.stroke()
+  screen.level(4); circle(14, MID, r + 2); screen.stroke()
   local phase, last = 0, 0
   screen.level(9)
   wave(function(t)

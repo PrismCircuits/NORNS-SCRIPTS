@@ -25,6 +25,13 @@ local S = include('lib/specs')
 local D = include('lib/draw')
 local fileselect = require 'fileselect'
 
+-- norns draws a circle as an arc joined to the current point (e.g. the end of the last text),
+-- which leaves a stray line across the screen. start each circle on its own.
+local function circle(x, y, r)
+  screen.move(x + r, y)
+  screen.circle(x, y, r)
+end
+
 local NT, NS = 8, 128
 local TABS = {"SEQ", "SND", "FX", "TRK", "LFO"}
 
@@ -626,7 +633,7 @@ local function fx_vis(t)
   screen.stroke()
   -- pan + sends
   screen.level(3); screen.move(96, 15); screen.line(127, 15); screen.stroke()
-  screen.level(15); screen.circle(111.5 + pan * 15, 15, 2); screen.fill()
+  screen.level(15); circle(111.5 + pan * 15, 15, 2); screen.fill()
   screen.level(10)
   screen.rect(96, 22, 31 * p("dly"), 2); screen.fill()
   screen.rect(96, 27, 31 * p("rev"), 2); screen.fill()
@@ -683,7 +690,7 @@ local function lfo_vis(t, li)
   screen.stroke()
   local val, ph = lfo_value(t, li)
   if on then
-    screen.level(15); screen.circle(ph * W, MID - val * AMP, 1.5); screen.fill()
+    screen.level(15); circle(ph * W, MID - val * AMP, 1.5); screen.fill()
   end
   -- label: which LFO and where it goes
   local label = "LFO" .. li .. " > " .. (d.k == "off" and "OFF" or (on and d.n or (d.n .. "?")))
