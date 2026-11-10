@@ -7,7 +7,8 @@ Engine_Loam : CroneEngine {
 	var mixBus, dlyBus, revBus, trackBus;
 	var voiceGroup, fxGroup, trackGroups, chokeGroups, chokeSub;
 	var trackFx, master;
-	var trackParams, voiceDefs, buffers;
+	var trackParams, voiceDefs, buffers, voices;
+	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
 	*new { arg context, doneCallback;
 		^super.new(context, doneCallback);
@@ -18,7 +19,7 @@ Engine_Loam : CroneEngine {
 
 		// shared voice output: choke gate + velocity, mono voices go to both channels
 		var finish = { |sig|
-			var c = EnvGen.kr(Env.asr(0, 1, 0.01), \gate.kr(1), doneAction: 2);
+			var c = EnvGen.ar(Env.asr(0, 1, 0.015, \sin), \gate.kr(1), doneAction: 2);
 			Out.ar(\out.kr(0), (sig * \vel.kr(1) * c) ! 2);
 		};
 		// drums: decays follow their knobs live, so free the voice when it falls silent
@@ -31,13 +32,15 @@ Engine_Loam : CroneEngine {
 		var expDec = { |dec, t| exp((t * -6.9) / dec.max(0.001)) };
 		var attack = { |a, t| (t / a).min(1) };
 		var finishStereo = { |sig|
-			var c = EnvGen.kr(Env.asr(0, 1, 0.01), \gate.kr(1), doneAction: 2);
+			var c = EnvGen.ar(Env.asr(0, 1, 0.015, \sin), \gate.kr(1), doneAction: 2);
 			Out.ar(\out.kr(0), sig * \vel.kr(1) * c);
 		};
-		var multiFilter = { |sig, type, cutoff, res|
+		// `type` is a plain integer: each synth/sample SynthDef is built once per filter type,
+		// so a voice runs only the one filter it needs (much lighter on the norns CPU)
+		var oneFilter = { |sig, type, cutoff, res|
 			var rq = (1 - (res * 0.95)).max(0.05);
 			var cf = cutoff.clip(20, 18000);
-			Select.ar(type, [RLPF.ar(sig, cf, rq), RHPF.ar(sig, cf, rq), BPF.ar(sig, cf, rq), BRF.ar(sig, cf, rq)]);
+			[RLPF, RHPF, BPF, BRF][type].ar(sig, cf, rq);
 		};
 
 		// ---------------------------------------------------------------- drums
@@ -117,34 +120,36 @@ Engine_Loam : CroneEngine {
 
 		// ---------------------------------------------------------------- synths
 
-		SynthDef(\loam_synth, { |dur=0.2, synth_note=36, synth_wave=2, synth_pw=0.5, synth_det=7,
-			synth_osc2=0.5, synth_sub=0.3, synth_ftype=0, synth_cutoff=800, synth_res=0.3,
-			synth_fenv=0.5, synth_fdec=0.25, synth_atk=0.003, synth_dec=0.2, synth_sus=0.5,
-			synth_rel=0.2, synth_lrate=3, synth_ldepth=0, synth_lshape=0, synth_ldest=1|
-			var gateSig = Trig1.kr(Impulse.kr(0), dur);
-			var lfo = Select.kr(synth_lshape, [
-				SinOsc.kr(synth_lrate), LFTri.kr(synth_lrate), LFSaw.kr(synth_lrate),
-				(LFPulse.kr(synth_lrate) * 2) - 1, LFNoise0.kr(synth_lrate)]) * synth_ldepth;
-			var lPitch = lfo * (synth_ldest < 0.5);
-			var lCut = lfo * ((synth_ldest > 0.5) * (synth_ldest < 1.5));
-			var lAmp = lfo * ((synth_ldest > 1.5) * (synth_ldest < 2.5));
-			var lPan = lfo * (synth_ldest > 2.5);
-			var freq = (synth_note + (lPitch * 12)).midicps;
-			var f2 = freq * (synth_det / 100).midiratio;
-			var o1 = Select.ar(synth_wave, [SinOsc.ar(freq), LFTri.ar(freq), Saw.ar(freq), Pulse.ar(freq, synth_pw), WhiteNoise.ar]);
-			var o2 = Select.ar(synth_wave, [SinOsc.ar(f2), LFTri.ar(f2), Saw.ar(f2), Pulse.ar(f2, synth_pw), WhiteNoise.ar]);
-			var sub = Pulse.ar(freq * 0.5) * synth_sub;
-			// attack/release envelope x a decay toward the live SUSTAIN level
-			var arEnv = EnvGen.ar(Env.asr(synth_atk, 1, synth_rel, -4), gateSig, doneAction: 2);
-			var decEnv = EnvGen.ar(Env([1, 1, 0], [synth_atk, synth_dec], [0, -4]));
-			var aenv = arEnv * (synth_sus + ((1 - synth_sus) * decEnv));
-			var fenv = EnvGen.kr(Env.perc(0.002, synth_fdec));
-			var cf = synth_cutoff * (2 ** ((fenv * synth_fenv * 5) + (lCut * 3)));
-			var sig = (o1 + (o2 * synth_osc2) + sub) * 0.7;
-			sig = multiFilter.(sig, synth_ftype, cf, synth_res);
-			sig = sig * aenv * (1 + lAmp).max(0);
-			finishStereo.(Pan2.ar(sig, lPan.clip(-1, 1)));
-		}).add;
+		4.do({ |ft|
+			SynthDef(("loam_synth_" ++ ft).asSymbol, { |dur=0.2, synth_note=36, synth_wave=2, synth_pw=0.5, synth_det=7,
+				synth_osc2=0.5, synth_sub=0.3, synth_ftype=0, synth_cutoff=800, synth_res=0.3,
+				synth_fenv=0.5, synth_fdec=0.25, synth_atk=0.003, synth_dec=0.2, synth_sus=0.5,
+				synth_rel=0.2, synth_lrate=3, synth_ldepth=0, synth_lshape=0, synth_ldest=1|
+				var gateSig = Trig1.kr(Impulse.kr(0), dur);
+				var lfo = Select.kr(synth_lshape, [
+					SinOsc.kr(synth_lrate), LFTri.kr(synth_lrate), LFSaw.kr(synth_lrate),
+					(LFPulse.kr(synth_lrate) * 2) - 1, LFNoise0.kr(synth_lrate)]) * synth_ldepth;
+				var lPitch = lfo * (synth_ldest < 0.5);
+				var lCut = lfo * ((synth_ldest > 0.5) * (synth_ldest < 1.5));
+				var lAmp = lfo * ((synth_ldest > 1.5) * (synth_ldest < 2.5));
+				var lPan = lfo * (synth_ldest > 2.5);
+				var freq = (synth_note + (lPitch * 12)).midicps;
+				var f2 = freq * (synth_det / 100).midiratio;
+				var o1 = Select.ar(synth_wave, [SinOsc.ar(freq), LFTri.ar(freq), Saw.ar(freq), Pulse.ar(freq, synth_pw), WhiteNoise.ar]);
+				var o2 = Select.ar(synth_wave, [SinOsc.ar(f2), LFTri.ar(f2), Saw.ar(f2), Pulse.ar(f2, synth_pw), WhiteNoise.ar]);
+				var sub = Pulse.ar(freq * 0.5) * synth_sub;
+				// attack/release envelope x a decay toward the live SUSTAIN level
+				var arEnv = EnvGen.ar(Env.asr(synth_atk, 1, synth_rel, -4), gateSig, doneAction: 2);
+				var decEnv = EnvGen.ar(Env([1, 1, 0], [synth_atk, synth_dec], [0, -4]));
+				var aenv = arEnv * (synth_sus + ((1 - synth_sus) * decEnv));
+				var fenv = EnvGen.kr(Env.perc(0.002, synth_fdec));
+				var cf = synth_cutoff * (2 ** ((fenv * synth_fenv * 5) + (lCut * 3)));
+				var sig = (o1 + (o2 * synth_osc2) + sub) * 0.7;
+				sig = oneFilter.(sig, ft, cf, synth_res);
+				sig = sig * aenv * (1 + lAmp).max(0);
+				finishStereo.(Pan2.ar(sig, lPan.clip(-1, 1)));
+			}).add;
+		});
 
 		SynthDef(\loam_fm, { |fm_note=60, fm_ratio=2, fm_index=2, fm_ienv=0.5, fm_fb=0, fm_atk=0.002, fm_decay=0.6|
 			var t = age.();
@@ -155,28 +160,31 @@ Engine_Loam : CroneEngine {
 			finishDrum.(SinOsc.ar(freq + mod) * env * 0.6);
 		}).add;
 
-		SynthDef(\loam_sample, { |buf=0, dur=0.2, smp_pitch=0, smp_start=0, smp_end=1, smp_rev=0, smp_mode=0,
-			smp_atk=0.002, smp_rel=0.05, smp_ftype=0, smp_cutoff=18000, smp_res=0.1|
-			var frames = BufFrames.kr(buf);
-			var bufSR = BufSampleRate.kr(buf);
-			var s0 = min(smp_start, smp_end) * frames;
-			var s1 = max(smp_start, smp_end) * frames;
-			var ratio = smp_pitch.midiratio;
-			var dir = 1 - (smp_rev * 2);
-			// where playback starts is fixed at the hit; pitch, END and direction follow their knobs live
-			var startPos = Latch.kr(Select.kr(smp_rev, [s0, s1]), Impulse.kr(0));
-			var pos = startPos + Sweep.ar(0, bufSR * ratio * dir);
-			var remain = Select.ar(smp_rev, [K2A.ar(s1) - pos, pos - K2A.ar(s0)]) / (bufSR * ratio);
-			// ONESHOT: the release fade ends exactly at the END marker (long release = fade across the sample)
-			// GATE: hold until the gate ends, then release as a tail while the sample keeps playing
-			var gateSig = Select.kr(smp_mode, [DC.kr(1), Trig1.kr(Impulse.kr(0), dur)]);
-			var env = EnvGen.ar(Env.asr(smp_atk, 1, smp_rel, -4), gateSig, doneAction: 2);
-			var endFade = (remain / Select.kr(smp_mode, [smp_rel, DC.kr(0.005)]).max(0.001)).clip(0, 1);
-			var sig = BufRd.ar(1, buf, pos, 0, 4) * endFade;
-			FreeSelf.kr(A2K.kr(remain) <= 0);
-			sig = multiFilter.(sig, smp_ftype, smp_cutoff, smp_res);
-			finish.(sig * env);
-		}).add;
+		4.do({ |ft|
+			SynthDef(("loam_sample_" ++ ft).asSymbol, { |buf=0, dur=0.2, smp_pitch=0, smp_start=0, smp_end=1, smp_rev=0, smp_mode=0,
+				smp_atk=0.002, smp_rel=0.05, smp_ftype=0, smp_cutoff=18000, smp_res=0.1|
+				var frames = BufFrames.kr(buf);
+				var bufSR = BufSampleRate.kr(buf);
+				var s0 = min(smp_start, smp_end) * frames;
+				var s1 = max(smp_start, smp_end) * frames;
+				var ratio = smp_pitch.midiratio;
+				var dir = 1 - (smp_rev * 2);
+				// where playback starts is fixed at the hit; pitch, END and direction follow their knobs live
+				var startPos = Latch.kr(Select.kr(smp_rev, [s0, s1]), Impulse.kr(0));
+				var pos = startPos + Sweep.ar(0, bufSR * ratio * dir);
+				var remain = Select.ar(smp_rev, [K2A.ar(s1) - pos, pos - K2A.ar(s0)]) / (bufSR * ratio);
+				// ONESHOT: the release fade ends exactly at the END marker (long release = fade across the sample)
+				// GATE: hold until the gate ends, then release as a tail while the sample keeps playing
+				var gateSig = Select.kr(smp_mode, [DC.kr(1), Trig1.kr(Impulse.kr(0), dur)]);
+				// attack never shorter than 1.5 ms, with a smooth (sine) shape so hits never start on a jump
+				var env = EnvGen.ar(Env([0, 1, 0], [smp_atk.max(0.0015), smp_rel], [\sin, -4], 1), gateSig, doneAction: 2);
+				var endFade = (remain / Select.kr(smp_mode, [smp_rel, DC.kr(0.005)]).max(0.001)).clip(0, 1);
+				var sig = BufRd.ar(1, buf, pos, 0, 4) * endFade;
+				FreeSelf.kr(A2K.kr(remain) <= 0);
+				sig = oneFilter.(sig, ft, smp_cutoff, smp_res);
+				finish.(sig * env);
+			}).add;
+		});
 
 		// ---------------------------------------------------------------- fx
 
@@ -241,6 +249,7 @@ Engine_Loam : CroneEngine {
 		trackParams = Array.fill(8, { IdentityDictionary.new });
 		voiceDefs = Array.fill(8, { \loam_kick });
 		buffers = Array.newClear(8);
+		voices = Array.fill(8, { List.new });
 
 		// ---------------------------------------------------------------- commands
 
@@ -269,13 +278,22 @@ Engine_Loam : CroneEngine {
 			var choke = msg[4].asInteger;
 			var def = voiceDefs[t];
 			var target = trackGroups[t];
-			var args;
+			var args, synth, ftKey;
 			if((def != \loam_sample) || buffers[t].notNil, {
 				if(choke == 1, { trackGroups[t].set(\gate, 0) });
 				if(choke > 1, { chokeGroups[choke - 2].set(\gate, 0); target = chokeSub[choke - 2][t] });
 				args = trackParams[t].asKeyValuePairs ++ [\out, trackBus[t].index, \vel, msg[2], \dur, msg[3]];
 				if(def == \loam_sample, { args = args ++ [\buf, buffers[t].bufnum] });
-				Synth(def, args, target);
+				// synth + sample come in one SynthDef per filter type
+				ftKey = (loam_sample: \smp_ftype, loam_synth: \synth_ftype)[def];
+				if(ftKey.notNil, { def = (def ++ "_" ++ (trackParams[t][ftKey] ? 0).asInteger.clip(0, 3)).asSymbol });
+				synth = Synth(def, args, target);
+				voices[t].add(synth);
+				synth.onFree({ voices[t].remove(synth) });
+				if(voices[t].size > maxVoices, {
+					voices[t][0].set(\gate, 0);
+					voices[t].removeAt(0);
+				});
 			});
 		});
 

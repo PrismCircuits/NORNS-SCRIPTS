@@ -33,7 +33,9 @@ Every track has its own insert effects: level, pan, DJ filter, drive, bit depth,
 
 Turning a knob changes sounds that are already ringing, not just the next hit. That includes the drum decays, pitch, filters, drive, the synth's sustain and LFO, the sample's pitch and END point, and all track and master effects.
 
-A few settings only apply at the start of a hit, because that's the only moment they mean anything: where a sample starts, attack times, the gap between clap hits, and velocity.
+A few settings only apply at the start of a hit: where a sample starts, attack times, the gap between clap hits, velocity, and the FILTER type on SYNTH and SAMPLE tracks. CUTOFF and RES stay live. Each voice only runs the one filter it needs, which keeps CPU use down.
+
+Each track plays at most 6 voices at once. When a 7th starts, the oldest fades out over 15 ms. This keeps long samples or long releases on fast patterns from overloading the norns, which would otherwise come out as clicks and pops.
 
 Parameter locks still belong to their step. A locked step plays with its locked values and keeps them while it rings. Turning a knob afterwards does move the ringing locked note too, since that's the knob you're turning.
 
