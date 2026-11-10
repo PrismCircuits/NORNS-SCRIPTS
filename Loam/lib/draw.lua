@@ -13,7 +13,7 @@ local function arc(x, y, r, a, b)
 end
 
 -- a knob: dim track, bright value arc, pointer, label (or value when selected)
-function D.knob(x, y, r, norm, text, sel, bipolar, locked)
+function D.knob(x, y, r, norm, text, sel, bipolar, locked, modded)
   norm = util.clamp(norm, 0, 1)
   local a = A0 + (A1 - A0) * norm
   screen.line_width(1)
@@ -33,6 +33,12 @@ function D.knob(x, y, r, norm, text, sel, bipolar, locked)
     screen.level(15)
     screen.rect(x + r - 1, y - r - 1, 3, 3)
     screen.fill()
+  end
+  if modded then
+    -- small ~ : an LFO moves this knob
+    screen.level(sel and 15 or 9)
+    screen.move(x - r - 3, y - r + 1); screen.line(x - r - 1, y - r - 1); screen.line(x - r + 1, y - r + 1)
+    screen.line(x - r + 3, y - r - 1); screen.stroke()
   end
   if text then
     screen.level(sel and 15 or 4)

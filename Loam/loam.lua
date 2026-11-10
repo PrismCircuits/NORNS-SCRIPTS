@@ -26,7 +26,7 @@ local D = include('lib/draw')
 local fileselect = require 'fileselect'
 
 local NT, NS = 8, 128
-local TABS = {"SEQ", "SND", "FX", "TRK"}
+local TABS = {"SEQ", "SND", "FX", "TRK", "LFO"}
 
 local tracks = {}
 local playing, pending_start = false, false
@@ -80,6 +80,108 @@ local function lock_value(t, i, k)
 end
 
 -- play step i of track t (i = nil for an audition with the base sound)
+-- ===================================================================== LFOs
+-- the engine runs the LFOs for sound / fx destinations. lua mirrors the same math for the
+-- display and for the sequencer destinations (PROB / GATE), which it applies per step.
+
+local LFO_T0 = 0
+local GATE_SPEC
+for _, sp in ipairs(S.TRK) do if sp.k == "gate" then GATE_SPEC = sp end end
+
+local function lid(t, i, k) return tid(t, "l" .. i .. "_" .. k) end
+local function lfo_dest(t, i) return S.LFO_DESTS[params:get(lid(t, i, "dest"))] end
+local function dest_valid(t, d) return d.k ~= "off" and (d.eng == nil or d.eng == eng(t).id) end
+
+-- shape value at phase p (0..1); S&H / DRIFT draw one random value per cycle
+local function lfo_shape(t, i, shape, p, cycle)
+  if shape == 1 then return math.sin(p * 2 * math.pi)
+  elseif shape == 2 then return 1 - 4 * math.abs(p - 0.5)
+  elseif shape == 3 then return p * 2 - 1
+  elseif shape == 4 then return 1 - p * 2
+  elseif shape == 5 then return p < 0.5 and 1 or -1
+  end
+  local tr = tracks[t]
+  tr.sh = tr.sh or {}
+  local st = tr.sh[i]
+  if not st or st.cycle ~= cycle then
+    st = {cycle = cycle, prev = st and st.val or 0, val = math.random() * 2 - 1}
+    tr.sh[i] = st
+  end
+  if shape == 6 then return st.val end
+  return st.prev + (st.val - st.prev) * math.min(1, p * 2)
+end
+
+-- lfo i of track t right now (x depth, -1..1), and its phase
+local function lfo_value(t, i)
+  local mode = params:get(lid(t, i, "mode"))
+  local x
+  if mode == 3 then
+    local beats = S.LFO_DIVS[params:get(lid(t, i, "div"))][2]
+    x = (playing and (tick_n / 96) or clock.get_beats()) / beats
+  else
+    local from = (mode == 2 and tracks[t].last_trig) or LFO_T0
+    x = (util.time() - from) * params:get(lid(t, i, "rate"))
+  end
+  x = x + params:get(lid(t, i, "phase"))
+  local cycle = math.floor(x)
+  local p = x - cycle
+  return lfo_shape(t, i, params:get(lid(t, i, "shape")), p, cycle) * params:get(lid(t, i, "depth")), p
+end
+
+-- total modulation on track t's destination k (sequencer destinations)
+local function lfo_sum(t, k)
+  local sum, any = 0, false
+  for i = 1, S.LFO_COUNT do
+    if lfo_dest(t, i).k == k then sum = sum + (lfo_value(t, i)); any = true end
+  end
+  return sum, any
+end
+
+-- keys being modulated on track t (for the ~ marks on knobs)
+local function lfo_targets(t)
+  local set = {}
+  for i = 1, S.LFO_COUNT do
+    local d = lfo_dest(t, i)
+    if dest_valid(t, d) then set[d.k] = true end
+  end
+  return set
+end
+
+local function send_route(t, i)
+  local d = lfo_dest(t, i)
+  if d.k == "off" or d.kind == 3 then
+    engine.lroute(t, i, "none", 3, 0, 1, 0, 0, 0)
+    return
+  end
+  local sp = d.sp
+  local lo, hi, warp, quant
+  if sp.t == "ctl" then lo, hi, warp, quant = sp.lo, sp.hi, (sp.warp == "exp") and 1 or 0, 0
+  elseif sp.t == "int" then lo, hi, warp, quant = sp.min, sp.max, 0, 1
+  else lo, hi, warp, quant = 0, #sp.opts - 1, 0, 1 end
+  engine.lroute(t, i, d.k, d.kind, lo, hi, warp, quant, S.to_sc(sp, params:get(tid(t, d.k))))
+end
+
+local function send_lfo(t, i, k, v)
+  if k == "mode" or k == "shape" then v = v - 1
+  elseif k == "div" then v = S.LFO_DIVS[v][2] end
+  engine.lfo(t, i, k, v)
+end
+
+local function gcd(a, b) while b ~= 0 do a, b = b, a % b end return a end
+
+-- SYNC lfos are re-aligned on the tick grid: at every multiple of lcm(cycle, 1 bar)
+local function lfo_sync_tick(n)
+  for t = 1, NT do
+    for i = 1, S.LFO_COUNT do
+      if params:get(lid(t, i, "mode")) == 3 and lfo_dest(t, i).k ~= "off" then
+        local cyc = math.floor(S.LFO_DIVS[params:get(lid(t, i, "div"))][2] * 96 + 0.5)
+        local every = cyc * 384 // gcd(cyc, 384)
+        if n % every == 0 then engine.lsync(t, i) end
+      end
+    end
+  end
+end
+
 local function fire(t, i, audition)
   local tr = tracks[t]
   local step = i and tr.steps[i]
@@ -88,9 +190,15 @@ local function fire(t, i, audition)
     if not step.on then return end
     if params:get(tid(t, "mute")) == 2 then return end
     local prob = L.prob or params:get(tid(t, "prob"))
+    local pm, pany = lfo_sum(t, "prob")
+    if pany then prob = util.clamp(prob + pm * 100, 0, 100) end
     if prob < 100 and math.random(100) > prob then return end
   end
-  local dur = params:get(tid(t, "gate")) * rate_ticks(t) / 96 * clock.get_beat_sec()
+  local gate = params:get(tid(t, "gate"))
+  local gm, gany = lfo_sum(t, "gate")
+  if gany then gate = GATE_SPEC.cs:map(util.clamp(GATE_SPEC.cs:unmap(gate) + gm, 0, 1)) end
+  local dur = gate * rate_ticks(t) / 96 * clock.get_beat_sec()
+  tr.last_trig = util.time()
   local vel = (L.vel or 100) / 100
   local locked = false
   for k, v in pairs(L) do
@@ -122,10 +230,7 @@ local function on_tick(n)
     reset_positions(n)
     master_flash = 4
   end
-  if n % 96 == 0 then
-    local bs = clock.get_beat_sec()
-    if bs ~= last_bs then last_bs = bs; update_delay() end
-  end
+  if n % 12 == 0 then lfo_sync_tick(n) end
   for t = 1, NT do
     local tr = tracks[t]
     if (n - tr.anchor) % rate_ticks(t) == 0 then
@@ -218,7 +323,7 @@ local function add_params()
   for _, e in ipairs(S.ENGINES) do nengine = nengine + #e.params end
 
   for t = 1, NT do
-    params:add_group("TRACK " .. t, #S.TRK + #S.FX + 1 + nengine)
+    params:add_group("TRACK " .. t, #S.TRK + #S.FX + 1 + nengine + S.LFO_COUNT * #S.LFO)
     for _, sp in ipairs(S.TRK) do
       local action
       if sp.k == "engine" then
@@ -244,6 +349,17 @@ local function add_params()
           end
         end
         add_param(tid(t, sp.k), sp, action, e.name .. " " .. sp.n)
+      end
+    end
+    for i = 1, S.LFO_COUNT do
+      for _, sp in ipairs(S.LFO) do
+        local action
+        if sp.k == "dest" then
+          action = function() if ready then send_route(t, i) end end
+        else
+          action = function(v) send_lfo(t, i, sp.k, v) end
+        end
+        add_param(lid(t, i, sp.k), sp, action, "LFO " .. i .. " " .. (sp.k == "div" and "SYNC RATE" or sp.n))
       end
     end
   end
@@ -335,10 +451,31 @@ local function master_list()
   return l
 end
 
+-- LFO tab: per LFO one page of DEST / MODE / RATE / DEPTH and one of SHAPE / PHASE (2 blank slots)
+local DEST_SPEC = {k = "dest", n = "DEST", t = "opt", opts = {}}
+for i, d in ipairs(S.LFO_DESTS) do DEST_SPEC.opts[i] = d.n end
+
+local function lfo_list(t)
+  local l = {}
+  for i = 1, S.LFO_COUNT do
+    local rate = params:get(lid(t, i, "mode")) == 3 and "div" or "rate"
+    l[#l + 1] = {id = lid(t, i, "dest"), sp = DEST_SPEC, dest = true, lfo = i}
+    l[#l + 1] = {id = lid(t, i, "mode"), sp = S.LFO_BY_K.mode, lfo = i}
+    l[#l + 1] = {id = lid(t, i, rate), sp = S.LFO_BY_K[rate], lfo = i}
+    l[#l + 1] = {id = lid(t, i, "depth"), sp = S.LFO_BY_K.depth, lfo = i}
+    l[#l + 1] = {id = lid(t, i, "shape"), sp = S.LFO_BY_K.shape, lfo = i}
+    l[#l + 1] = {id = lid(t, i, "phase"), sp = S.LFO_BY_K.phase, lfo = i}
+    l[#l + 1] = {blank = true, lfo = i}
+    l[#l + 1] = {blank = true, lfo = i}
+  end
+  return l
+end
+
 local function knob_context()
   if lock then return "lock", lock_list(lock.t) end
   if page == 0 then return "master", master_list() end
   local t, tb = page, cur_tab
+  if tb == 5 then return "LFO", lfo_list(t) end
   local l = {}
   local src = tb == 2 and eng(t).params or tb == 3 and S.FX or S.TRK
   for _, sp in ipairs(src) do l[#l + 1] = {id = tid(t, sp.k), sp = sp} end
@@ -378,11 +515,11 @@ local function draw_knobs(list, idx, getter)
   for j = 1, 4 do
     local n = pg * 4 + j
     local e = list[n]
-    if e then
-      local v, locked = getter(e)
+    if e and not e.blank then
+      local v, locked, modded = getter(e)
       local s = n == idx
       local text = (s and showing_value(e.id or ("lock:" .. e.k))) and S.fmt(e.sp, v) or e.sp.n
-      D.knob(16 + (j - 1) * 32, 44, 8, S.norm(e.sp, v), text, s, e.sp.bi, locked)
+      D.knob(16 + (j - 1) * 32, 44, 8, S.norm(e.sp, v), text, s, e.sp.bi, locked, modded)
     end
   end
   if npg > 1 then
@@ -491,9 +628,67 @@ local function trk_vis(t)
     params:get(tid(t, "prob")), S.CHOKES[params:get(tid(t, "choke"))]))
 end
 
+-- LFO tab picture: the selected LFO's cycle (scaled by depth) with a moving dot, its destination,
+-- and live meters for all four LFOs of the track
+local SH_STEPS = {0.7, -0.3, 0.9, -0.8, 0.2, -0.6}
+local function shape_preview(shape, p)
+  if shape == 1 then return math.sin(p * 2 * math.pi)
+  elseif shape == 2 then return 1 - 4 * math.abs(p - 0.5)
+  elseif shape == 3 then return p * 2 - 1
+  elseif shape == 4 then return 1 - p * 2
+  elseif shape == 5 then return p < 0.5 and 1 or -1
+  elseif shape == 6 then return SH_STEPS[math.floor(p * 6) % 6 + 1]
+  end
+  local x = p * 6
+  local a, b = SH_STEPS[math.floor(x) % 6 + 1], SH_STEPS[(math.floor(x) + 1) % 6 + 1]
+  local f = x - math.floor(x)
+  return a + (b - a) * (0.5 - 0.5 * math.cos(f * math.pi))
+end
+
+local function lfo_vis(t, li)
+  li = li or 1
+  local W, MID, AMP = 84, 21, 9
+  local d = lfo_dest(t, li)
+  local on = dest_valid(t, d)
+  local depth = params:get(lid(t, li, "depth"))
+  local shape = params:get(lid(t, li, "shape"))
+  -- centre line + one cycle
+  screen.level(1); screen.move(0, MID); screen.line(W, MID); screen.stroke()
+  screen.level(on and 9 or 3)
+  for x = 0, W do
+    local y = MID - shape_preview(shape, x / W) * depth * AMP
+    if x == 0 then screen.move(x, y) else screen.line(x, y) end
+  end
+  screen.stroke()
+  local val, ph = lfo_value(t, li)
+  if on then
+    screen.level(15); screen.circle(ph * W, MID - val * AMP, 1.5); screen.fill()
+  end
+  -- label: which LFO and where it goes
+  local label = "LFO" .. li .. " > " .. (d.k == "off" and "OFF" or (on and d.n or (d.n .. "?")))
+  screen.level(0); screen.rect(0, 9, screen.text_extents(label) + 2, 7); screen.fill()
+  screen.level(on and 15 or 5); screen.move(1, 15); screen.text(label)
+  -- meters for LFO 1-4
+  for j = 1, S.LFO_COUNT do
+    local x = 87 + (j - 1) * 10
+    local dj = lfo_dest(t, j)
+    local active = dest_valid(t, dj)
+    screen.level(j == li and 6 or 2); screen.rect(x + 0.5, 11.5, 7, 18); screen.stroke()
+    if active then
+      local v = (lfo_value(t, j))
+      screen.level(j == li and 15 or 8)
+      if v >= 0 then screen.rect(x + 2, MID - v * 8, 4, v * 8) else screen.rect(x + 2, MID, 4, -v * 8) end
+      screen.fill()
+    end
+    screen.level(j == li and 15 or 4); screen.move(x + 4, 31); screen.text_center(j)
+  end
+end
+
 local function clamp_sel(ctx, list)
-  ksel[ctx] = util.clamp(ksel[ctx] or 1, 1, #list)
-  return ksel[ctx]
+  local k = util.clamp(ksel[ctx] or 1, 1, #list)
+  while list[k].blank and k > 1 do k = k - 1 end
+  ksel[ctx] = k
+  return k
 end
 
 local function draw_mixer()
@@ -553,7 +748,7 @@ function redraw()
   else
     local t = page
     local e = eng(t)
-    header(t .. ":" .. e.name, TABS, cur_tab, tracks[t].flash > 0)
+    header(t .. ":" .. e.abbr, TABS, cur_tab, tracks[t].flash > 0)
     if cur_tab == 1 then
       draw_seq(t)
     else
@@ -561,10 +756,13 @@ function redraw()
         D.vis[e.id](function(k) return params:get(tid(t, k)) end, {file = tracks[t].file})
       elseif cur_tab == 3 then
         fx_vis(t)
-      else
+      elseif cur_tab == 4 then
         trk_vis(t)
+      else
+        lfo_vis(t, list[clamp_sel(ctx, list)].lfo)
       end
-      draw_knobs(list, clamp_sel(ctx, list), function(en) return params:get(en.id), false end)
+      local targets = cur_tab == 5 and {} or lfo_targets(t)
+      draw_knobs(list, clamp_sel(ctx, list), function(en) return params:get(en.id), false, targets[en.sp.k] end)
     end
   end
   if confirm then
@@ -683,10 +881,24 @@ function enc(n, d)
   local ctx, list = knob_context()
   local k = clamp_sel(ctx, list)
   if n == 2 then
-    ksel[ctx] = util.clamp(k + d, 1, #list)
+    local nk = util.clamp(k + d, 1, #list)
+    while list[nk].blank and nk > 1 and nk < #list do nk = nk + (d > 0 and 1 or -1) end
+    if list[nk].blank then nk = k end
+    ksel[ctx] = nk
   else
     local en = list[k]
-    if en.sp.t == "ctl" and shift then params:delta(en.id, d / 10) else params:delta(en.id, d) end
+    if en.dest then
+      -- only destinations that exist on this track's engine (plus FX and sequencer ones)
+      local t = page
+      local v = params:get(en.id)
+      local step = d > 0 and 1 or -1
+      for _ = 1, math.abs(d) do
+        local nv = v + step
+        while S.LFO_DESTS[nv] and S.LFO_DESTS[nv].k ~= "off" and not dest_valid(t, S.LFO_DESTS[nv]) do nv = nv + step end
+        if S.LFO_DESTS[nv] then v = nv end
+      end
+      params:set(en.id, v)
+    elseif en.sp.t == "ctl" and shift then params:delta(en.id, d / 10) else params:delta(en.id, d) end
     touch(en.id)
   end
 end
@@ -788,8 +1000,12 @@ function init()
   else
     default_kit()
   end
+  LFO_T0 = util.time()
   params:bang()
   ready = true
+  for t = 1, NT do
+    for i = 1, S.LFO_COUNT do send_route(t, i) end
+  end
   for t = 1, NT do update_visibility(t) end
 
   clock.run(tick_loop)
@@ -798,6 +1014,12 @@ function init()
       if tracks[t].flash > 0 then tracks[t].flash = tracks[t].flash - 1 end
     end
     if master_flash > 0 then master_flash = master_flash - 1 end
+    local bs = clock.get_beat_sec()
+    if bs ~= last_bs then
+      last_bs = bs
+      update_delay()
+      engine.ltempo(1 / bs)
+    end
     redraw()
     if grid_dirty or playing then grid_redraw(); grid_dirty = false end
   end, 1 / 20)

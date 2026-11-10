@@ -7,7 +7,8 @@ local musicutil = require 'musicutil'
 local S = {}
 
 local function C(k, n, min, max, warp, def, u, bi)
-  return {k = k, n = n, t = "ctl", cs = ControlSpec.new(min, max, warp, 0, def, ""), u = u, bi = bi, def = def}
+  return {k = k, n = n, t = "ctl", cs = ControlSpec.new(min, max, warp, 0, def, ""), u = u, bi = bi, def = def,
+    lo = min, hi = max, warp = warp}
 end
 local function I(k, n, min, max, def, u)
   return {k = k, n = n, t = "int", min = min, max = max, def = def, u = u}
@@ -193,6 +194,52 @@ S.STEP = {
 
 S.TEMPO = I("clock_tempo", "TEMPO", 20, 300, 120, "bpm")
 
+-- ---------------------------------------------------------------- LFOs
+
+S.LFO_COUNT = 4
+S.LFO_MODES = {"FREE", "RETRIG", "SYNC"}
+S.LFO_SHAPES = {"SIN", "TRI", "SAW+", "SAW-", "SQR", "S&H", "DRIFT"}
+-- sync divisions: note length of one LFO cycle, in beats (quarter notes)
+S.LFO_DIVS = {
+  {"1/32", 0.125}, {"1/16", 0.25}, {"1/8T", 1 / 3}, {"1/8", 0.5}, {"1/4T", 2 / 3}, {"1/8D", 0.75},
+  {"1/4", 1}, {"1/4D", 1.5}, {"1/2", 2}, {"1 BAR", 4}, {"2 BAR", 8}, {"4 BAR", 16}, {"8 BAR", 32}, {"16 BAR", 64},
+}
+local divnames = {}
+for i, d in ipairs(S.LFO_DIVS) do divnames[i] = d[1] end
+
+-- every modulation destination. kind: voice (engine sound param), strip (track mixer),
+-- color (track drive/crush/filter insert), lua (sequencer: applied per step)
+S.LFO_DESTS = {{k = "off", n = "OFF", full = "OFF"}}
+local NO_MOD = {synth_ftype = true, smp_ftype = true, smp_norm = true} -- chosen at the hit / at load
+for _, e in ipairs(S.ENGINES) do
+  for _, p in ipairs(e.params) do
+    if not NO_MOD[p.k] then
+      S.LFO_DESTS[#S.LFO_DESTS + 1] = {k = p.k, n = p.n, full = e.name .. " " .. p.n, sp = p, eng = e.id, kind = 0}
+    end
+  end
+end
+local STRIP = {level = true, pan = true, dly = true, rev = true}
+for _, p in ipairs(S.FX) do
+  S.LFO_DESTS[#S.LFO_DESTS + 1] = {k = p.k, n = p.n, full = "FX " .. p.n, sp = p, kind = STRIP[p.k] and 1 or 2}
+end
+S.LFO_DESTS[#S.LFO_DESTS + 1] = {k = "prob", n = "PROB", full = "SEQ PROB", kind = 3,
+  sp = {k = "prob", n = "PROB", t = "int", min = 0, max = 100, lo = 0, hi = 100, warp = "lin"}}
+S.LFO_DESTS[#S.LFO_DESTS + 1] = {k = "gate", n = "GATE", full = "SEQ GATE", kind = 3}
+S.LFO_DEST_NAMES = {}
+for i, d in ipairs(S.LFO_DESTS) do S.LFO_DEST_NAMES[i] = d.full end
+
+S.LFO = {
+  O("dest", "DEST", S.LFO_DEST_NAMES, 1),
+  O("mode", "MODE", S.LFO_MODES, 3),
+  C("rate", "RATE", 0.01, 40, "exp", 1, "hz"),
+  O("div", "RATE", divnames, 10),
+  C("depth", "DEPTH", -1, 1, "lin", 0.3, "%", true),
+  O("shape", "SHAPE", S.LFO_SHAPES, 1),
+  C("phase", "PHASE", 0, 1, "lin", 0, "%"),
+}
+S.LFO_BY_K = {}
+for _, sp in ipairs(S.LFO) do S.LFO_BY_K[sp.k] = sp end
+
 -- lookup of every lockable engine key -> spec
 S.BY_KEY = {}
 for _, e in ipairs(S.ENGINES) do
@@ -227,6 +274,7 @@ function S.fmt(spec, v)
   if spec.t == "opt" then return spec.opts[v] or "?" end
   if u == "hz" then
     if v >= 1000 then return string.format("%.1fk", v / 1000) end
+    if v < 10 then return string.format("%.2fhz", v) end
     return string.format("%d", math.floor(v + 0.5))
   elseif u == "s" then
     if v < 1 then return string.format("%dms", math.floor(v * 1000 + 0.5)) end

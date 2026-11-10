@@ -56,6 +56,29 @@ If you still hear crackles on busy patterns, use choke MONO on tracks with long 
 
 Parameter locks still belong to their step. A locked step plays with its locked values and keeps them while it rings. Turning a knob afterwards does move the ringing locked note too, since that's the knob you're turning.
 
+## LFOs
+
+Every track has 4 LFOs on its own **LFO** tab (after TRK). Each LFO has two knob pages:
+
+| Knob | |
+|---|---|
+| DEST | what it moves: any sound parameter of the track's engine, the track's FX (level, pan, filter, drive, bits, sample rate, delay and reverb sends), or the sequencer's PROB and GATE. DEST only offers what exists on the current engine. |
+| MODE | **FREE** runs on its own at RATE (Hz). **RETRIG** restarts every time the track plays a step. **SYNC** locks to the master tempo. |
+| RATE | Hz in FREE and RETRIG mode, or a note length per cycle in SYNC mode: 1/32 to 16 bars, including triplet (T) and dotted (D) values |
+| DEPTH | how far it moves the parameter. 100% sweeps the whole knob range; negative values invert the movement |
+| SHAPE | sine, triangle, ramp up, ramp down, square, sample & hold, drift (smooth random) |
+| PHASE | where in its cycle it starts |
+
+- Modulation is applied around the knob's current value, on the knob's own scale, so a filter LFO sweeps in octaves rather than in Hz. The knob still sets the center.
+- Sound and FX destinations run in the sound engine. They move continuously and also affect notes that are already ringing.
+- PROB and GATE are applied by the sequencer at each step.
+- Several LFOs on one parameter add together.
+- A locked step keeps its locked value, so the LFO doesn't move that parameter on that step.
+- Knobs being modulated show a small **~** mark on the SND, FX and TRK tabs.
+- The LFO tab shows the selected LFO's cycle with a moving dot, where it's routed, and live meters for all four.
+- Choose FILTER type, sample NORMALIZE and the synth's FILTER type at the hit or at load, not with an LFO, so they aren't LFO destinations.
+- A track's LFOs only use CPU while at least one of them is routed to a sound or FX parameter.
+
 ## Sequencer
 
 - Each track has 128 steps, its own length (1–128) and its own rate, from 1/8x up to 8x, including triplet rates (1/3, 2/3, 4/3, 3/2, x3, x6).
@@ -69,7 +92,7 @@ Parameter locks still belong to their step. A locked step plays with its locked 
 | | |
 |---|---|
 | E1 | page: MASTER, track 1–8 (also picks the track shown on grid) |
-| K2 | next tab (track: SEQ / SND / FX / TRK, master: MIX / FX) |
+| K2 | next tab (track: SEQ / SND / FX / TRK / LFO, master: MIX / FX) |
 | K1+K2 | play / stop |
 | K1 (hold) | shift: fine adjust |
 | E2 / E3 | select knob / change value |

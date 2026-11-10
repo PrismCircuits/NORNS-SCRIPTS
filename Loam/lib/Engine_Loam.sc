@@ -7,6 +7,7 @@ Engine_Loam : CroneEngine {
 	var mixBus, dlyBus, revBus, trackBus;
 	var voiceGroup, fxGroup, trackGroups, chokeGroups, chokeSub;
 	var trackFx, master, returns, colorGroup, colorFx, fxState, returnsOff;
+	var lfoGroup, modGroup, lfoBus, lfoSynth, baseParams, mods, routes;
 	var trackParams, voiceDefs, buffers, voices;
 	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
@@ -198,6 +199,53 @@ Engine_Loam : CroneEngine {
 
 		// ---------------------------------------------------------------- fx
 
+		// ---------------------------------------------------------------- LFOs
+
+		// 4 LFOs per track, written to a 4-channel control bus (value already x depth, -1..1)
+		// mode: 0 FREE (own rate), 1 RETRIG (restarts on the track's hits), 2 SYNC (tempo / division, re-aligned by lua)
+		SynthDef(\loam_lfo, { |out=0, tempo=2|
+			var modes = \mode.kr([2, 2, 2, 2]);
+			var rates = \rate.kr([1, 1, 1, 1]);
+			var divs = \div.kr([4, 4, 4, 4]);
+			var depths = \depth.kr([0, 0, 0, 0]);
+			var shapes = \shape.kr([0, 0, 0, 0]);
+			var phases = \phase.kr([0, 0, 0, 0]);
+			var retrig = \t_retrig.tr(0);
+			var syncs = \t_sync.tr([0, 0, 0, 0]);
+			var outs = 4.collect({ |i|
+				var mode = modes[i];
+				var hz = Select.kr(mode > 1.5, [rates[i], tempo / divs[i].max(0.001)]);
+				var reset = (retrig * ((mode > 0.5) * (mode < 1.5))) + (syncs[i] * (mode > 1.5));
+				var ph = Phasor.kr(reset, hz / ControlRate.ir, 0, 1, 0);
+				var p = (ph + phases[i]).wrap(0, 1);
+				var newCycle = (HPZ1.kr(ph) < 0) + reset + Impulse.kr(0);
+				var sh = Latch.kr(WhiteNoise.kr, newCycle);
+				var v = Select.kr(shapes[i], [
+					(p * 2pi).sin,
+					1 - (4 * (p - 0.5).abs),
+					(p * 2) - 1,
+					1 - (p * 2),
+					((p < 0.5) * 2) - 1,
+					sh,
+					Lag.kr(sh, 0.5 / hz.max(0.01))
+				]);
+				v * depths[i]
+			});
+			Out.kr(out, outs);
+		}).add;
+
+		// one per modulated parameter: base value (the knob) + the LFOs routed to it, in the
+		// parameter's own normalized space (lin or exp), written to a control bus that voices / fx read
+		SynthDef(\loam_mod, { |out=0, lfoBus=0, base=0, lo=0, hi=1, warp=0, quant=0, w0=0, w1=0, w2=0, w3=0|
+			var l = In.kr(lfoBus, 4);
+			var m = (l[0] * w0) + (l[1] * w1) + (l[2] * w2) + (l[3] * w3);
+			var nLin = (base - lo) / (hi - lo);
+			var nExp = log(base.max(1e-6) / lo.max(1e-6)) / log(hi.max(1e-6) / lo.max(1e-6));
+			var n = (Select.kr(warp, [nLin, nExp]) + m).clip(0, 1);
+			var v = Select.kr(warp, [lo + ((hi - lo) * n), lo.max(1e-6) * ((hi.max(1e-6) / lo.max(1e-6)) ** n)]);
+			Out.kr(out, Select.kr(quant, [v, v.round(1)]));
+		}).add;
+
 		// optional per-track colour insert: only exists while DRIVE / BITS / S.RATE / FILTER are away from neutral
 		SynthDef(\loam_trackcolor, { |bus=0, drive=0, bits=16, srate=48000, filter=0|
 			var sig = In.ar(bus, 2);
@@ -254,6 +302,9 @@ Engine_Loam : CroneEngine {
 		trackBus = Array.fill(8, { Bus.audio(s, 2) });
 
 		voiceGroup = Group.head(context.xg);
+		// LFOs and modulation mappers run first in each block, so voices / fx read fresh values
+		lfoGroup = Group.before(voiceGroup);
+		modGroup = Group.tail(lfoGroup);
 		trackGroups = Array.fill(8, { Group.tail(voiceGroup) });
 		chokeGroups = Array.fill(4, { Group.tail(voiceGroup) });
 		// one sub-group per track inside each choke group, so live knob changes reach only that track
@@ -261,7 +312,7 @@ Engine_Loam : CroneEngine {
 		colorGroup = Group.after(voiceGroup);
 		fxGroup = Group.after(colorGroup);
 		colorFx = Array.newClear(8);
-		fxState = Array.fill(8, { (drive: 0, bits: 16, srate: 48000, filter: 0, dly: 0, rev: 0) });
+		fxState = Array.fill(8, { (drive: 0, bits: 16, srate: 48000, filter: 0, dly: 0, rev: 0, level: 0.8, pan: 0) });
 
 		trackFx = Array.fill(8, { |i|
 			Synth(\loam_trackfx, [\in, trackBus[i], \out, mixBus, \dlyBus, dlyBus, \revBus, revBus], fxGroup)
@@ -274,6 +325,13 @@ Engine_Loam : CroneEngine {
 		voiceDefs = Array.fill(8, { \loam_kick });
 		buffers = Array.newClear(8);
 		voices = Array.fill(8, { List.new });
+		baseParams = Array.fill(8, { IdentityDictionary.new });
+		mods = Array.fill(8, { IdentityDictionary.new });
+		routes = Array.fill(8, { Array.newClear(4) });
+		lfoBus = Array.fill(8, { Bus.control(s, 4) });
+		lfoSynth = Array.fill(8, { |i| Synth.head(lfoGroup, \loam_lfo, [\out, lfoBus[i].index]) });
+		// a track's LFO bank only runs while something on that track is routed to the engine
+		lfoSynth.do(_.run(false));
 
 		// ---------------------------------------------------------------- commands
 
@@ -282,8 +340,10 @@ Engine_Loam : CroneEngine {
 			var t = msg[1].asInteger - 1;
 			var k = msg[2].asSymbol;
 			trackParams[t].put(k, msg[3]);
+			baseParams[t].put(k, msg[3]);
 			trackGroups[t].set(k, msg[3]);
 			chokeSub.do({ |g| g[t].set(k, msg[3]) });
+			if(mods[t][k].notNil, { mods[t][k][\synth].set(\base, msg[3]) });
 		});
 
 		// ps(track, key, value): store only (per-step locks: the next voice reads it, sounding voices keep theirs)
@@ -306,7 +366,12 @@ Engine_Loam : CroneEngine {
 			if((def != \loam_sample) || buffers[t].notNil, {
 				if(choke == 1, { trackGroups[t].set(\gate, 0) });
 				if(choke > 1, { chokeGroups[choke - 2].set(\gate, 0); target = chokeSub[choke - 2][t] });
+				lfoSynth[t].set(\t_retrig, 1);
 				args = trackParams[t].asKeyValuePairs ++ [\out, trackBus[t].index, \vel, msg[2], \dur, msg[3]];
+				// modulated sound params read their modulator's bus; a step lock on that param wins
+				mods[t].keysValuesDo({ |k, m|
+					if((m[\kind] == 0) && (trackParams[t][k] == baseParams[t][k]), { args = args ++ [k, m[\bus].asMap] });
+				});
 				if(def == \loam_sample, { args = args ++ [\buf, buffers[t].bufnum] });
 				// synth + sample come in one SynthDef per filter type
 				ftKey = (loam_sample: \smp_ftype, loam_synth: \synth_ftype)[def];
@@ -327,11 +392,12 @@ Engine_Loam : CroneEngine {
 			var t = msg[1].asInteger - 1;
 			var k = msg[2].asSymbol;
 			var v = msg[3];
+			if(mods[t][k].notNil, { mods[t][k][\synth].set(\base, v) });
 			if([\drive, \bits, \srate, \filter].includes(k), {
 				fxState[t].put(k, v);
 				this.updateColor(t);
 			}, {
-				if([\dly, \rev].includes(k), { fxState[t].put(k, v) });
+				fxState[t].put(k, v);
 				trackFx[t].set(k, v);
 				if([\dly, \rev].includes(k), { this.updateReturns });
 			});
@@ -344,6 +410,29 @@ Engine_Loam : CroneEngine {
 				returns.set(k, msg[2]);
 			}, {
 				master.set(k, msg[2]);
+			});
+		});
+
+		// lfo(track, lfo 1-4, key, value): mode / rate / div / depth / shape / phase
+		this.addCommand("lfo", "iisf", { |msg|
+			lfoSynth[msg[1].asInteger - 1].seti(msg[3].asSymbol, msg[2].asInteger - 1, msg[4]);
+		});
+
+		// ltempo(beats per second): SYNC rate source
+		this.addCommand("ltempo", "f", { |msg| lfoSynth.do({ |l| l.set(\tempo, msg[1]) }) });
+
+		// lsync(track, lfo 1-4): re-align a SYNC lfo to the start of its cycle (sent by lua on the grid)
+		this.addCommand("lsync", "ii", { |msg|
+			lfoSynth[msg[1].asInteger - 1].seti(\t_sync, msg[2].asInteger - 1, 1);
+		});
+
+		// lroute(track, lfo, key, kind, lo, hi, warp, quant, base): point an lfo at a parameter ("none" = off)
+		// kind: 0 voice param, 1 track strip, 2 colour insert, 3 sequencer (handled in lua)
+		this.addCommand("lroute", "iisiffiif", { |msg|
+			var t = msg[1].asInteger - 1, i = msg[2].asInteger - 1, k = msg[3].asSymbol, kind = msg[4].asInteger;
+			this.removeRoute(t, i);
+			if((k != \none) && (kind < 3), {
+				this.addRoute(t, i, k, kind, msg[5], msg[6], msg[7].asInteger, msg[8].asInteger, msg[9]);
 			});
 		});
 
@@ -372,18 +461,25 @@ Engine_Loam : CroneEngine {
 	// create / update / remove a track's colour insert depending on whether any colour knob is in use
 	updateColor { |t|
 		var st = fxState[t];
-		var neutral = (st[\drive] <= 0.0001) && (st[\bits] >= 16) && (st[\srate] >= 47999) && (st[\filter].abs < 0.001);
-		var args = [\drive, st[\drive], \bits, st[\bits], \srate, st[\srate], \filter, st[\filter]];
+		var keys = [\drive, \bits, \srate, \filter];
+		var modded = keys.select({ |k| mods[t][k].notNil });
+		var neutral = (st[\drive] <= 0.0001) && (st[\bits] >= 16) && (st[\srate] >= 47999) && (st[\filter].abs < 0.001)
+			&& modded.isEmpty;
+		// plain values for unmodulated knobs; modulated ones read their modulator bus (mapping persists)
+		var plain = keys.reject({ |k| modded.includes(k) }).collect({ |k| [k, st[k]] }).flatten;
 		if(neutral, {
 			if(colorFx[t].notNil, { colorFx[t].free; colorFx[t] = nil });
 		}, {
 			if(colorFx[t].isNil, {
-				colorFx[t] = Synth(\loam_trackcolor, [\bus, trackBus[t].index] ++ args, colorGroup);
+				colorFx[t] = Synth(\loam_trackcolor,
+					[\bus, trackBus[t].index] ++ plain ++ modded.collect({ |k| [k, mods[t][k][\bus].asMap] }).flatten,
+					colorGroup);
 			}, {
-				colorFx[t].set(*args);
+				if(plain.notEmpty, { colorFx[t].set(*plain) });
 			});
 		});
 	}
+
 
 	// run delay + reverb only while some track sends to them; pause 12 s after the last send closes
 	updateReturns {
@@ -398,8 +494,70 @@ Engine_Loam : CroneEngine {
 		});
 	}
 
+	addRoute { |t, i, k, kind, lo, hi, warp, quant, base|
+		var m = mods[t][k];
+		if(m.isNil, {
+			var bus = Bus.control(context.server, 1);
+			var syn = Synth.tail(modGroup, \loam_mod, [\out, bus.index, \lfoBus, lfoBus[t].index,
+				\base, base, \lo, lo, \hi, hi, \warp, warp, \quant, quant]);
+			m = (synth: syn, bus: bus, kind: kind, w: [0, 0, 0, 0]);
+			mods[t].put(k, m);
+			this.mapTargets(t, k, kind, bus.index);
+		});
+		m[\w][i] = 1;
+		m[\synth].set(("w" ++ i).asSymbol, 1);
+		routes[t][i] = k;
+		lfoSynth[t].run(true);
+	}
+
+	removeRoute { |t, i|
+		var k = routes[t][i];
+		var m = k !? { mods[t][k] };
+		routes[t][i] = nil;
+		if(m.notNil, {
+			m[\w][i] = 0;
+			m[\synth].set(("w" ++ i).asSymbol, 0);
+			if(m[\w].sum == 0, {
+				mods[t].removeAt(k);
+				this.mapTargets(t, k, m[\kind], -1);
+				m[\synth].free;
+				m[\bus].free;
+			});
+		});
+		if(routes[t].every(_.isNil), { lfoSynth[t].run(false) });
+	}
+
+	// point a parameter's control at a modulator bus, or (busIndex -1) back at its own value
+	mapTargets { |t, k, kind, busIndex|
+		var base;
+		switch(kind,
+			0, {
+				trackGroups[t].map(k, busIndex);
+				chokeSub.do({ |g| g[t].map(k, busIndex) });
+				if(busIndex < 0, {
+					base = baseParams[t][k];
+					if(base.notNil, { trackGroups[t].set(k, base); chokeSub.do({ |g| g[t].set(k, base) }) });
+				});
+			},
+			1, {
+				trackFx[t].map(k, busIndex);
+				if(busIndex < 0, { trackFx[t].set(k, fxState[t][k]) });
+			},
+			2, {
+				if(colorFx[t].notNil, {
+					colorFx[t].map(k, busIndex);
+					if(busIndex < 0, { colorFx[t].set(k, fxState[t][k]) });
+				});
+				this.updateColor(t);
+			}
+		);
+	}
+
 	free {
 		if(returnsOff.notNil, { returnsOff.stop });
+		lfoGroup.free;
+		mods.do({ |d| d.do({ |m| m[\bus].free }) });
+		lfoBus.do(_.free);
 		voiceGroup.free;
 		colorGroup.free;
 		fxGroup.free;
