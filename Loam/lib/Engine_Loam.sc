@@ -6,7 +6,7 @@
 Engine_Loam : CroneEngine {
 	var mixBus, dlyBus, revBus, trackBus;
 	var voiceGroup, fxGroup, trackGroups, chokeGroups, chokeSub;
-	var trackFx, master;
+	var trackFx, master, returns, colorGroup, colorFx, fxState, returnsOff;
 	var trackParams, voiceDefs, buffers, voices;
 	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
@@ -169,29 +169,38 @@ Engine_Loam : CroneEngine {
 				var s1 = max(smp_start, smp_end) * frames;
 				var ratio = smp_pitch.midiratio;
 				var dir = 1 - (smp_rev * 2);
-				// where playback starts is fixed at the hit; pitch, END and direction follow their knobs live
-				var startPos = Latch.kr(Select.kr(smp_rev, [s0, s1]), Impulse.kr(0));
+				var startPos = Select.kr(smp_rev, [s0, s1]);
+				// plain buffer player; PITCH follows its knob live
+				var raw = PlayBuf.ar(1, buf, BufRateScale.kr(buf) * ratio * dir, 1, startPos, 0);
+				// play position, only used to know when END is reached (END is live too)
 				var pos = startPos + Sweep.ar(0, bufSR * ratio * dir);
-				var remain = Select.ar(smp_rev, [K2A.ar(s1) - pos, pos - K2A.ar(s0)]) / (bufSR * ratio);
-				// ONESHOT: the release fade ends exactly at the END marker (long release = fade across the sample)
-				// GATE: hold until the gate ends, then release as a tail while the sample keeps playing
+				var remain = Select.ar(smp_rev, [K2A.ar(s1) - pos, pos - K2A.ar(s0)]);
+				// ZERO-CROSSING GATE: no fades on the sound itself.
+				// a hit opens at the first zero crossing, and closes at the first zero crossing after
+				// it reaches END or is cut (choke / voice limit). 30 ms safety cut if it never crosses zero.
+				var zc = ((HPZ1.ar(raw >= 0).abs > 0) + (raw.abs < 0.0005)) > 0;
+				var stopReq = ((remain <= 0) + (1 - \gate.kr(1))) > 0;
+				var stopNow = ((stopReq * zc) + DelayN.ar(stopReq, 0.03, 0.03)) > 0;
+				var opened = SetResetFF.ar(zc, 0);
+				var closed = SetResetFF.ar(stopNow, 0);
+				// your ATTACK / RELEASE: GATE mode releases as a tail after the gate;
+				// ONESHOT fades out over RELEASE so it reaches silence at END
 				var gateSig = Select.kr(smp_mode, [DC.kr(1), Trig1.kr(Impulse.kr(0), dur)]);
-				// attack never shorter than 1.5 ms, with a smooth (sine) shape so hits never start on a jump
-				var env = EnvGen.ar(Env([0, 1, 0], [smp_atk.max(0.0015), smp_rel], [\sin, -4], 1), gateSig, doneAction: 2);
-				var endFade = (remain / Select.kr(smp_mode, [smp_rel, DC.kr(0.005)]).max(0.001)).clip(0, 1);
-				var sig = BufRd.ar(1, buf, pos, 0, 4) * endFade;
-				FreeSelf.kr(A2K.kr(remain) <= 0);
+				var env = EnvGen.ar(Env([0, 1, 0], [smp_atk, smp_rel], [0, -4], 1), gateSig, doneAction: 2);
+				// slew-limited so moving END behind the play position can't make it jump: the gate closes it instead
+				var endFade = Slew.ar(Select.ar(smp_mode, [((remain / (bufSR * ratio)) / smp_rel.max(0.001)).clip(0, 1), DC.ar(1)]), 1000, 50);
+				var sig = raw * opened * (1 - closed) * endFade;
+				FreeSelf.kr(DelayN.kr(A2K.kr(closed), 0.05, 0.05));
 				sig = oneFilter.(sig, ft, smp_cutoff, smp_res);
-				finish.(sig * env);
+				Out.ar(\out.kr(0), (sig * env * \vel.kr(1)) ! 2);
 			}).add;
 		});
 
 		// ---------------------------------------------------------------- fx
 
-		SynthDef(\loam_trackfx, { |in=0, out=0, dlyBus=0, revBus=0, level=0.8, pan=0, mute=0, drive=0,
-			bits=16, srate=48000, filter=0, dly=0, rev=0|
-			var sig = In.ar(in, 2);
-			var amp = Lag.kr(level * (1 - mute), 0.02);
+		// optional per-track colour insert: only exists while DRIVE / BITS / S.RATE / FILTER are away from neutral
+		SynthDef(\loam_trackcolor, { |bus=0, drive=0, bits=16, srate=48000, filter=0|
+			var sig = In.ar(bus, 2);
 			var f = Lag.kr(filter, 0.05);
 			sig = XFade2.ar(sig, (sig * (1 + (drive * 20))).tanh * 0.7, (drive * 2) - 1);
 			// rate reduction; bypassed at full rate (an Impulse at the sample rate never fires)
@@ -199,26 +208,37 @@ Engine_Loam : CroneEngine {
 			sig = sig.round(0.5 ** (bits - 1));
 			sig = LPF.ar(sig, (20000 * (2 ** (f.min(0) * 9))).clip(20, 20000));
 			sig = HPF.ar(sig, (20 * (2 ** (f.max(0) * 9))).clip(20, 20000));
+			ReplaceOut.ar(bus, sig);
+		}).add;
+
+		// always-on track strip: just level, mute, pan and the two sends (very light)
+		SynthDef(\loam_trackfx, { |in=0, out=0, dlyBus=0, revBus=0, level=0.8, pan=0, mute=0, dly=0, rev=0|
+			var sig = In.ar(in, 2);
+			var amp = Lag.kr(level * (1 - mute), 0.02);
 			sig = Balance2.ar(sig[0], sig[1], pan) * amp;
 			Out.ar(out, sig);
 			Out.ar(dlyBus, sig * dly);
 			Out.ar(revBus, sig * rev);
 		}).add;
 
-		SynthDef(\loam_master, { |in=0, dlyBus=0, revBus=0, out=0, dtime=0.375, dfb=0.45, dtone=4000, dlvl=0.7,
-			rsize=0.8, rdamp=0.5, rlvl=0.7, mfilter=0, cthresh=(-12), cratio=4, catk=0.01, crel=0.15,
-			cgain=3, vol=0.8|
-			var dry = In.ar(in, 2);
+		// delay + reverb returns: paused whenever no track sends to them (after the tails ring out)
+		SynthDef(\loam_returns, { |dlyBus=0, revBus=0, out=0, dtime=0.375, dfb=0.45, dtone=4000, dlvl=0.7,
+			rsize=0.8, rdamp=0.5, rlvl=0.7|
 			var dIn = In.ar(dlyBus, 2);
 			var rIn = In.ar(revBus, 2);
 			var fb = LocalIn.ar(2);
-			var f = Lag.kr(mfilter, 0.05);
-			var d, rev, sig;
+			var d, rev;
 			d = DelayC.ar(dIn + (fb * dfb), 2, Lag.kr(dtime, 0.2));
 			d = LPF.ar(d, dtone);
 			LocalOut.ar(d.reverse);
 			rev = FreeVerb2.ar(rIn[0], rIn[1], 1, rsize, rdamp);
-			sig = dry + (d * dlvl) + (rev * rlvl);
+			Out.ar(out, (d * dlvl) + (rev * rlvl));
+		}).add;
+
+		// master bus: dj filter -> compressor -> limiter
+		SynthDef(\loam_master, { |in=0, out=0, mfilter=0, cthresh=(-12), cratio=4, catk=0.01, crel=0.15, cgain=3, vol=0.8|
+			var sig = In.ar(in, 2);
+			var f = Lag.kr(mfilter, 0.05);
 			sig = LPF.ar(sig, (20000 * (2 ** (f.min(0) * 9))).clip(20, 20000));
 			sig = HPF.ar(sig, (20 * (2 ** (f.max(0) * 9))).clip(20, 20000));
 			sig = Compander.ar(sig, sig, cthresh.dbamp, 1, 1 / cratio, catk, crel) * cgain.dbamp;
@@ -238,13 +258,17 @@ Engine_Loam : CroneEngine {
 		chokeGroups = Array.fill(4, { Group.tail(voiceGroup) });
 		// one sub-group per track inside each choke group, so live knob changes reach only that track
 		chokeSub = Array.fill(4, { |c| Array.fill(8, { Group.tail(chokeGroups[c]) }) });
-		fxGroup = Group.after(voiceGroup);
+		colorGroup = Group.after(voiceGroup);
+		fxGroup = Group.after(colorGroup);
+		colorFx = Array.newClear(8);
+		fxState = Array.fill(8, { (drive: 0, bits: 16, srate: 48000, filter: 0, dly: 0, rev: 0) });
 
 		trackFx = Array.fill(8, { |i|
 			Synth(\loam_trackfx, [\in, trackBus[i], \out, mixBus, \dlyBus, dlyBus, \revBus, revBus], fxGroup)
 		});
-		master = Synth.after(fxGroup, \loam_master,
-			[\in, mixBus, \dlyBus, dlyBus, \revBus, revBus, \out, context.out_b]);
+		returns = Synth.after(fxGroup, \loam_returns, [\dlyBus, dlyBus, \revBus, revBus, \out, mixBus]);
+		master = Synth.after(returns, \loam_master, [\in, mixBus, \out, context.out_b]);
+		returns.run(false);
 
 		trackParams = Array.fill(8, { IdentityDictionary.new });
 		voiceDefs = Array.fill(8, { \loam_kick });
@@ -298,13 +322,29 @@ Engine_Loam : CroneEngine {
 		});
 
 		// fx(track, key, value): track insert / mixer
+		// fx(track, key, value): track strip, or the optional colour insert
 		this.addCommand("fx", "isf", { |msg|
-			trackFx[msg[1].asInteger - 1].set(msg[2].asSymbol, msg[3]);
+			var t = msg[1].asInteger - 1;
+			var k = msg[2].asSymbol;
+			var v = msg[3];
+			if([\drive, \bits, \srate, \filter].includes(k), {
+				fxState[t].put(k, v);
+				this.updateColor(t);
+			}, {
+				if([\dly, \rev].includes(k), { fxState[t].put(k, v) });
+				trackFx[t].set(k, v);
+				if([\dly, \rev].includes(k), { this.updateReturns });
+			});
 		});
 
-		// mfx(key, value): master bus
+		// mfx(key, value): master bus (delay/reverb keys go to the returns)
 		this.addCommand("mfx", "sf", { |msg|
-			master.set(msg[1].asSymbol, msg[2]);
+			var k = msg[1].asSymbol;
+			if([\dtime, \dfb, \dtone, \dlvl, \rsize, \rdamp, \rlvl].includes(k), {
+				returns.set(k, msg[2]);
+			}, {
+				master.set(k, msg[2]);
+			});
 		});
 
 		// sload(track, path): read channel 1 of a sound file into the track's buffer
@@ -327,9 +367,41 @@ Engine_Loam : CroneEngine {
 		});
 	}
 
+	// create / update / remove a track's colour insert depending on whether any colour knob is in use
+	updateColor { |t|
+		var st = fxState[t];
+		var neutral = (st[\drive] <= 0.0001) && (st[\bits] >= 16) && (st[\srate] >= 47999) && (st[\filter].abs < 0.001);
+		var args = [\drive, st[\drive], \bits, st[\bits], \srate, st[\srate], \filter, st[\filter]];
+		if(neutral, {
+			if(colorFx[t].notNil, { colorFx[t].free; colorFx[t] = nil });
+		}, {
+			if(colorFx[t].isNil, {
+				colorFx[t] = Synth(\loam_trackcolor, [\bus, trackBus[t].index] ++ args, colorGroup);
+			}, {
+				colorFx[t].set(*args);
+			});
+		});
+	}
+
+	// run delay + reverb only while some track sends to them; pause 12 s after the last send closes
+	updateReturns {
+		var any = fxState.any({ |st| (st[\dly] > 0) || (st[\rev] > 0) });
+		if(any, {
+			if(returnsOff.notNil, { returnsOff.stop; returnsOff = nil });
+			returns.run(true);
+		}, {
+			if(returnsOff.isNil, {
+				returnsOff = Routine({ 12.wait; returns.run(false); returnsOff = nil }).play(SystemClock);
+			});
+		});
+	}
+
 	free {
+		if(returnsOff.notNil, { returnsOff.stop });
 		voiceGroup.free;
+		colorGroup.free;
 		fxGroup.free;
+		returns.free;
 		master.free;
 		buffers.do({ |b| if(b.notNil, { b.free }) });
 		trackBus.do({ |b| b.free });

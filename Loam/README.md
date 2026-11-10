@@ -35,7 +35,20 @@ Turning a knob changes sounds that are already ringing, not just the next hit. T
 
 A few settings only apply at the start of a hit: where a sample starts, attack times, the gap between clap hits, velocity, and the FILTER type on SYNTH and SAMPLE tracks. CUTOFF and RES stay live. Each voice only runs the one filter it needs, which keeps CPU use down.
 
-Each track plays at most 6 voices at once. When a 7th starts, the oldest fades out over 15 ms. This keeps long samples or long releases on fast patterns from overloading the norns, which would otherwise come out as clicks and pops.
+Each track plays at most 6 voices at once. When a 7th starts, the oldest is cut. This keeps long samples or long releases on fast patterns from overloading the norns, which would otherwise come out as clicks and pops.
+
+## Samples and zero crossings
+
+Sample hits open at the first zero crossing of the waveform, so playback never starts mid-wave. They also close at a zero crossing when they reach END, get choked, or are cut by the voice limit. A sound that never crosses zero, such as one with a DC offset, is cut after 30 ms anyway. Your ATTACK and RELEASE knobs work on top of that: RELEASE gives a tail in GATE mode, and a fade that finishes at END in ONESHOT mode.
+
+## CPU
+
+Effects only run while they're in use, to leave the norns as much headroom as possible:
+
+- A track's DRIVE / BITS / S.RATE / FILTER section only exists while one of those knobs is away from neutral.
+- The delay and reverb run only while some track sends to them. They keep running for 12 seconds after the last send closes, so tails ring out.
+
+If you still hear crackles on busy patterns, use choke MONO on tracks with long samples, shorten long releases, and turn unused sends fully down.
 
 Parameter locks still belong to their step. A locked step plays with its locked values and keeps them while it rings. Turning a knob afterwards does move the ringing locked note too, since that's the knob you're turning.
 
