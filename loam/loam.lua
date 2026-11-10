@@ -77,6 +77,12 @@ if osc then
     elseif path == "/loam/error" then
       diag.errors[args[1]] = args[2]
       show_errors()
+    elseif path == "/loam/pong" then
+      -- the engine answered a DIAG ping: lua -> engine -> lua works
+      diag.pong_t = util.time()
+      diag.cmds = args[2]
+      diag.hits = math.max(diag.hits or 0, args[3] or 0)
+      diag.amp = math.max(diag.amp or 0, args[4] or 0)
     end
   end
 end
@@ -811,21 +817,25 @@ local function draw_diag()
     screen.level(5); screen.move(1, y); screen.text(label)
     screen.level(ok == false and 15 or 10); screen.move(127, y); screen.text_right(value)
   end
-  row(16, "ENGINE", diag.engine_ok and "LOADED" or "NOT LOADED", diag.engine_ok)
-  row(24, "ENGINE COPIES", tostring(#diag.copies) .. (#diag.copies > 1 and " (TOO MANY)" or ""), #diag.copies == 1)
-  row(32, "HITS RECEIVED", tostring(math.floor(diag.hits)), nil)
-  row(48, "ENGINE ERRORS", tostring(#diag.errors) .. (#diag.errors > 0 and " (K1+K3)" or ""), #diag.errors == 0)
+  local replying = diag.pong_t and (util.time() - diag.pong_t) < 2
+  row(14, "ENGINE", (diag.engine_ok and "LOADED" or "NOT LOADED") .. (replying and ", REPLYING" or ", NO REPLY"),
+    diag.engine_ok and replying)
+  row(21, "COPIES / ERRORS", #diag.copies .. " / " .. #diag.errors, #diag.copies == 1 and #diag.errors == 0)
+  row(28, "CMDS / HITS RECEIVED", tostring(diag.cmds or "?") .. " / " .. tostring(math.floor(diag.hits)), nil)
   -- output meter
-  screen.level(5); screen.move(1, 41); screen.text("OUT")
-  screen.level(2); screen.rect(20.5, 36.5, 106, 5); screen.stroke()
+  screen.level(5); screen.move(1, 38); screen.text("OUT")
+  screen.level(2); screen.rect(20.5, 33.5, 106, 5); screen.stroke()
   local db = 20 * math.log(math.max(diag.amp, 1e-5), 10)
   local w = util.clamp((db + 60) / 60, 0, 1) * 105
-  screen.level(15); screen.rect(21, 37, w, 4); screen.fill()
-  screen.level(5); screen.move(1, 55)
+  screen.level(15); screen.rect(21, 34, w, 4); screen.fill()
+  if #diag.errors > 0 then
+    screen.level(15); screen.move(1, 46); screen.text("K1+K3: SHOW ENGINE ERROR")
+  end
+  screen.level(5); screen.move(1, 54)
   screen.text(playing and "SEQUENCER RUNNING" or "SEQUENCER STOPPED (K1+K2)")
   local sent = util.time() - diag.tone_t < 1
   screen.level(sent and 15 or 8); screen.move(1, 62)
-  screen.text(sent and "TONE SENT - HEAR IT?" or "K3: TEST TONE")
+  screen.text(sent and "SENT: TONE + KICK ON TRACK 1" or "K3: TEST TONE + KICK")
 end
 
 function redraw()
@@ -1070,6 +1080,7 @@ function key(n, z)
       params:set(id, 3 - params:get(id))
     elseif mtab == 3 then
       engine.tone(440)
+      fire(1, nil, true)
       diag.tone_t = util.time()
     else
       reset_positions(tick_n)
@@ -1145,6 +1156,10 @@ function init()
       if tracks[t].flash > 0 then tracks[t].flash = tracks[t].flash - 1 end
     end
     if master_flash > 0 then master_flash = master_flash - 1 end
+    if page == 0 and mtab == 3 and type(engine.commands) == "table" and engine.commands["ping"] then
+      diag.ping_n = (diag.ping_n or 0) + 1
+      if diag.ping_n % 10 == 0 then engine.ping(diag.ping_n) end
+    end
     local bs = clock.get_beat_sec()
     if bs ~= last_bs then
       last_bs = bs

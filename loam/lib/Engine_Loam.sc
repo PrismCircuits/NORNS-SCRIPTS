@@ -10,6 +10,7 @@ Engine_Loam : CroneEngine {
 	var lfoGroup, modGroup, lfoBus, lfoSynth, baseParams, mods, routes;
 	var outAmp = 0, hitsIn = 0, ampOSC;   // diagnostics, read by lua through polls
 	var errors, failOSC;                  // anything that failed while loading, shown on the norns screen
+	var cmdCount = 0;                     // every command received from lua (DIAG)
 	var trackParams, voiceDefs, buffers, voices;
 	classvar maxVoices = 6;   // per track; the oldest voice fades out when a 7th starts
 
@@ -423,12 +424,12 @@ Engine_Loam : CroneEngine {
 
 		// trig(track, velocity, gate seconds, choke) choke: 0 off, 1 mono, 2-5 groups A-D
 		this.safeCommand("trig", "iffi", { |msg|
-			var t = msg[1].asInteger - 1;
-			var choke = msg[4].asInteger;
-			var def = voiceDefs[t];
-			var target = trackGroups[t];
-			var args, synth, ftKey;
-			hitsIn = hitsIn + 1;
+			var t, choke, def, target, args, synth, ftKey;
+			hitsIn = hitsIn + 1;   // count first, so a failure below can't hide that the hit arrived
+			t = msg[1].asInteger - 1;
+			choke = msg[4].asInteger;
+			def = voiceDefs[t];
+			target = trackGroups[t];
 			if((def != \loam_sample) || buffers[t].notNil, {
 				if(choke == 1, { trackGroups[t].set(\gate, 0) });
 				if(choke > 1, { chokeGroups[choke - 2].set(\gate, 0); target = chokeSub[choke - 2][t] });
@@ -533,6 +534,11 @@ Engine_Loam : CroneEngine {
 		this.safeCommand("sclear", "i", { |msg|
 			var t = msg[1].asInteger - 1;
 			if(buffers[t].notNil, { buffers[t].free; buffers[t] = nil });
+		});
+
+		// ping(n): DIAG asks twice a second; the reply proves lua -> engine -> lua works and carries the counters
+		this.safeCommand("ping", "f", { |msg|
+			NetAddr("127.0.0.1", 10111).sendMsg("/loam/pong", msg[1], cmdCount, hitsIn, outAmp, errors.size);
 		});
 
 		// errors that happened before lua was listening are sent again when lua asks
@@ -647,14 +653,17 @@ Engine_Loam : CroneEngine {
 	}
 
 	sendErrors {
-		var lua = NetAddr("127.0.0.1", 8888);
+		var lua = NetAddr("127.0.0.1", 10111);   // norns delivers this port to the script's osc.event
 		lua.sendMsg("/loam/errors", errors.size);
 		errors.do({ |t, i| lua.sendMsg("/loam/error", i + 1, t.asString.keep(200)) });
 	}
 
 	// like addCommand, but an error inside a command is caught and shown instead of failing silently
 	safeCommand { |name, format, func|
-		^this.addCommand(name, format, { |msg| try { func.(msg) } { |e| this.report("command " ++ name, e) } });
+		^this.addCommand(name, format, { |msg|
+			cmdCount = cmdCount + 1;
+			try { func.(msg) } { |e| this.report("command " ++ name, e) };
+		});
 	}
 
 	free {
