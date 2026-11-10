@@ -297,11 +297,16 @@ Engine_Loam : CroneEngine {
 			var sig = In.ar(in, 2);
 			var f = Lag.kr(mfilter, 0.05);
 			var ctl;
+			// never let a bad value (NaN / inf) reach the filters, compressor or limiter: they would keep it
+			// and the whole engine would stay silent. a bad sample becomes silence for that sample instead.
+			// (basic comparison + Select only: NaN and inf fail `abs < 100`, so they pick the silent input)
+			sig = sig.collect({ |c| Select.ar(c.abs < 100, [DC.ar(0), c]) });
 			sig = LPF.ar(sig, (20000 * (2 ** (f.min(0) * 9))).clip(20, 20000));
 			sig = HPF.ar(sig, (20 * (2 ** (f.max(0) * 9))).clip(20, 20000));
-			// the compressor listens to a 20 ms RMS level, not the raw waveform, so it can't change gain
-			// inside a single bass cycle (that bent low waveforms and sounded like clipping)
-			ctl = (RunningSum.ar(sig.squared.sum * 0.5, 960) / 960).max(0).sqrt;
+			// the compressor listens to a smoothed (~20 ms) power level, not the raw waveform, so it can't
+			// change gain inside a single bass cycle (that bent low waveforms and sounded like clipping).
+			// plain core UGens only: no running-sum state that could get stuck
+			ctl = LPF.ar(LPF.ar(sig.squared.sum * 0.5, 25), 25).max(0).sqrt;
 			sig = Compander.ar(sig, ctl, cthresh.dbamp, 1, 1 / cratio, catk, crel) * cgain.dbamp;
 			sig = Limiter.ar(sig * vol, 0.97);
 			SendReply.kr(Impulse.kr(15), '/loam_amp', [Amplitude.kr(sig[0], 0.01, 0.3), Amplitude.kr(sig[1], 0.01, 0.3)]);
