@@ -43,7 +43,11 @@ Sample hits open at the first zero crossing of the waveform, so playback never s
 
 ## Normalize
 
-With NORMALIZE on (SND tab, on by default), each sample is scaled as it loads so its loudest point sits at about −1 dB. Quiet files come up to the same level as loud ones. Switch it off to keep a file's original level. Switching it reloads the track's sample straight away.
+With NORMALIZE on (SND tab, on by default), each sample is scaled as it loads so its loudest point sits at −3 dB. Quiet files come up to the same level as loud ones, and there's headroom left for overlapping hits and resonant filters. Samples are held and processed as 32-bit floating point, so normalizing is a plain multiplication that never clips or quantizes anything. Switch it off to keep a file's original level. Switching it reloads the track's sample straight away.
+
+## Master compressor
+
+The master compressor follows a 20 ms average (RMS) of the level, not the raw waveform, so it never changes gain within a single bass cycle. That keeps kicks, 808s and bass clean instead of gritty.
 
 ## CPU
 
@@ -66,12 +70,13 @@ Every track has 4 LFOs on its own **LFO** tab (after TRK). Each LFO has two knob
 | MODE | **FREE** runs on its own at RATE (Hz). **RETRIG** restarts every time the track plays a step. **SYNC** locks to the master tempo. |
 | RATE | Hz in FREE and RETRIG mode, or a note length per cycle in SYNC mode: 1/32 to 16 bars, including triplet (T) and dotted (D) values |
 | DEPTH | how far it moves the parameter. 100% sweeps the whole knob range; negative values invert the movement |
-| SHAPE | sine, triangle, ramp up, ramp down, square, sample & hold, drift (smooth random) |
+| SHAPE | sine, triangle, ramp up, ramp down, square, sample & hold, drift (smooth random). Sine, triangle and ramps start their cycle at 0 (the knob's own value) and square at its high half. S&H and drift pick a new value every cycle, and on every hit in RETRIG mode; drift glides to it in at most 1 second |
 | PHASE | where in its cycle it starts |
 
 - Modulation is applied around the knob's current value, on the knob's own scale, so a filter LFO sweeps in octaves rather than in Hz. The knob still sets the center.
 - Sound and FX destinations run in the sound engine. They move continuously and also affect notes that are already ringing.
 - PROB and GATE are applied by the sequencer at each step.
+- The DEST knob spreads only the destinations available on the track's current engine evenly around its turn, with OFF at the bottom.
 - Several LFOs on one parameter add together.
 - A locked step keeps its locked value, so the LFO doesn't move that parameter on that step.
 - Knobs being modulated show a small **~** mark on the SND, FX and TRK tabs.

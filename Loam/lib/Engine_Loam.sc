@@ -220,14 +220,16 @@ Engine_Loam : CroneEngine {
 				var p = (ph + phases[i]).wrap(0, 1);
 				var newCycle = (HPZ1.kr(ph) < 0) + reset + Impulse.kr(0);
 				var sh = Latch.kr(WhiteNoise.kr, newCycle);
+				// every shape starts its cycle at 0 (square: at the start of its high half);
+				// S&H / DRIFT pick a new random value each cycle and on every retrigger
 				var v = Select.kr(shapes[i], [
 					(p * 2pi).sin,
-					1 - (4 * (p - 0.5).abs),
-					(p * 2) - 1,
-					1 - (p * 2),
+					1 - (4 * (((p + 0.25).wrap(0, 1)) - 0.5).abs),
+					(((p + 0.5).wrap(0, 1)) * 2) - 1,
+					1 - (((p + 0.5).wrap(0, 1)) * 2),
 					((p < 0.5) * 2) - 1,
 					sh,
-					Lag.kr(sh, 0.5 / hz.max(0.01))
+					Lag.kr(sh, (0.5 / hz.max(0.01)).min(1))
 				]);
 				v * depths[i]
 			});
@@ -287,9 +289,13 @@ Engine_Loam : CroneEngine {
 		SynthDef(\loam_master, { |in=0, out=0, mfilter=0, cthresh=(-12), cratio=4, catk=0.01, crel=0.15, cgain=3, vol=0.8|
 			var sig = In.ar(in, 2);
 			var f = Lag.kr(mfilter, 0.05);
+			var ctl;
 			sig = LPF.ar(sig, (20000 * (2 ** (f.min(0) * 9))).clip(20, 20000));
 			sig = HPF.ar(sig, (20 * (2 ** (f.max(0) * 9))).clip(20, 20000));
-			sig = Compander.ar(sig, sig, cthresh.dbamp, 1, 1 / cratio, catk, crel) * cgain.dbamp;
+			// the compressor listens to a 20 ms RMS level, not the raw waveform, so it can't change gain
+			// inside a single bass cycle (that bent low waveforms and sounded like clipping)
+			ctl = (RunningSum.ar(sig.squared.sum * 0.5, 960) / 960).max(0).sqrt;
+			sig = Compander.ar(sig, ctl, cthresh.dbamp, 1, 1 / cratio, catk, crel) * cgain.dbamp;
 			sig = Limiter.ar(sig * vol, 0.97);
 			Out.ar(out, sig);
 		}).add;
@@ -443,8 +449,9 @@ Engine_Loam : CroneEngine {
 			if(File.exists(path), {
 				Buffer.readChannel(s, path, channels: [0], action: { |b|
 					var old = buffers[t];
-					// NORMALIZE (on unless the track says off): loudest point to 0.9 (about -1 dB), done on the server
-					if((trackParams[t][\smp_norm] ? 1) > 0.5, { b.normalize(0.9) });
+					// NORMALIZE (on unless the track says off): loudest point to -3 dB, done on the server.
+					// buffers are 32-bit float, so this is a plain multiply: nothing is clipped or quantized
+					if((trackParams[t][\smp_norm] ? 1) > 0.5, { b.normalize(0.7071) });
 					buffers[t] = b;
 					if(old.notNil, { old.free });
 				});

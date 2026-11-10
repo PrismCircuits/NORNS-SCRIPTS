@@ -92,14 +92,19 @@ local function lid(t, i, k) return tid(t, "l" .. i .. "_" .. k) end
 local function lfo_dest(t, i) return S.LFO_DESTS[params:get(lid(t, i, "dest"))] end
 local function dest_valid(t, d) return d.k ~= "off" and (d.eng == nil or d.eng == eng(t).id) end
 
--- shape value at phase p (0..1); S&H / DRIFT draw one random value per cycle
-local function lfo_shape(t, i, shape, p, cycle)
+-- shape value at phase p (0..1). every shape starts its cycle at 0 (square at its high half).
+-- S&H / DRIFT draw one random value per cycle (and per retrigger); DRIFT glides there over
+-- half a cycle, at most `glide` seconds
+local function base_shape(shape, p)
   if shape == 1 then return math.sin(p * 2 * math.pi)
-  elseif shape == 2 then return 1 - 4 * math.abs(p - 0.5)
-  elseif shape == 3 then return p * 2 - 1
-  elseif shape == 4 then return 1 - p * 2
-  elseif shape == 5 then return p < 0.5 and 1 or -1
-  end
+  elseif shape == 2 then return 1 - 4 * math.abs(((p + 0.25) % 1) - 0.5)
+  elseif shape == 3 then return ((p + 0.5) % 1) * 2 - 1
+  elseif shape == 4 then return 1 - ((p + 0.5) % 1) * 2
+  else return p < 0.5 and 1 or -1 end
+end
+
+local function lfo_shape(t, i, shape, p, cycle, cycle_secs)
+  if shape <= 5 then return base_shape(shape, p) end
   local tr = tracks[t]
   tr.sh = tr.sh or {}
   local st = tr.sh[i]
@@ -108,24 +113,30 @@ local function lfo_shape(t, i, shape, p, cycle)
     tr.sh[i] = st
   end
   if shape == 6 then return st.val end
-  return st.prev + (st.val - st.prev) * math.min(1, p * 2)
+  local glide = math.min(0.5 * cycle_secs, 1)
+  return st.prev + (st.val - st.prev) * math.min(1, (p * cycle_secs) / math.max(glide, 0.001))
 end
 
 -- lfo i of track t right now (x depth, -1..1), and its phase
 local function lfo_value(t, i)
   local mode = params:get(lid(t, i, "mode"))
-  local x
+  local x, cycle_secs
   if mode == 3 then
     local beats = S.LFO_DIVS[params:get(lid(t, i, "div"))][2]
     x = (playing and (tick_n / 96) or clock.get_beats()) / beats
+    cycle_secs = beats * clock.get_beat_sec()
   else
+    local rate = params:get(lid(t, i, "rate"))
     local from = (mode == 2 and tracks[t].last_trig) or LFO_T0
-    x = (util.time() - from) * params:get(lid(t, i, "rate"))
+    x = (util.time() - from) * rate
+    cycle_secs = 1 / rate
   end
   x = x + params:get(lid(t, i, "phase"))
   local cycle = math.floor(x)
   local p = x - cycle
-  return lfo_shape(t, i, params:get(lid(t, i, "shape")), p, cycle) * params:get(lid(t, i, "depth")), p
+  -- in RETRIG every hit starts a fresh cycle, so random shapes draw a new value per hit
+  if mode == 2 then cycle = (tracks[t].trigs or 0) * 1000000 + cycle end
+  return lfo_shape(t, i, params:get(lid(t, i, "shape")), p, cycle, cycle_secs) * params:get(lid(t, i, "depth")), p
 end
 
 -- total modulation on track t's destination k (sequencer destinations)
@@ -199,6 +210,7 @@ local function fire(t, i, audition)
   if gany then gate = GATE_SPEC.cs:map(util.clamp(GATE_SPEC.cs:unmap(gate) + gm, 0, 1)) end
   local dur = gate * rate_ticks(t) / 96 * clock.get_beat_sec()
   tr.last_trig = util.time()
+  tr.trigs = (tr.trigs or 0) + 1
   local vel = (L.vel or 100) / 100
   local locked = false
   for k, v in pairs(L) do
@@ -455,11 +467,24 @@ end
 local DEST_SPEC = {k = "dest", n = "DEST", t = "opt", opts = {}}
 for i, d in ipairs(S.LFO_DESTS) do DEST_SPEC.opts[i] = d.n end
 
+-- DEST knob position: evenly spread over the destinations available on this track's engine
+local function dest_norm(v)
+  local t = page
+  local count, rank = 0, 0
+  for idx, d in ipairs(S.LFO_DESTS) do
+    if d.k == "off" or dest_valid(t, d) then
+      if idx == v then rank = count end
+      count = count + 1
+    end
+  end
+  return count > 1 and rank / (count - 1) or 0
+end
+
 local function lfo_list(t)
   local l = {}
   for i = 1, S.LFO_COUNT do
     local rate = params:get(lid(t, i, "mode")) == 3 and "div" or "rate"
-    l[#l + 1] = {id = lid(t, i, "dest"), sp = DEST_SPEC, dest = true, lfo = i}
+    l[#l + 1] = {id = lid(t, i, "dest"), sp = DEST_SPEC, dest = true, lfo = i, norm = dest_norm}
     l[#l + 1] = {id = lid(t, i, "mode"), sp = S.LFO_BY_K.mode, lfo = i}
     l[#l + 1] = {id = lid(t, i, rate), sp = S.LFO_BY_K[rate], lfo = i}
     l[#l + 1] = {id = lid(t, i, "depth"), sp = S.LFO_BY_K.depth, lfo = i}
@@ -519,7 +544,7 @@ local function draw_knobs(list, idx, getter)
       local v, locked, modded = getter(e)
       local s = n == idx
       local text = (s and showing_value(e.id or ("lock:" .. e.k))) and S.fmt(e.sp, v) or e.sp.n
-      D.knob(16 + (j - 1) * 32, 44, 8, S.norm(e.sp, v), text, s, e.sp.bi, locked, modded)
+      D.knob(16 + (j - 1) * 32, 44, 8, e.norm and e.norm(v) or S.norm(e.sp, v), text, s, e.sp.bi, locked, modded)
     end
   end
   if npg > 1 then
@@ -632,11 +657,7 @@ end
 -- and live meters for all four LFOs of the track
 local SH_STEPS = {0.7, -0.3, 0.9, -0.8, 0.2, -0.6}
 local function shape_preview(shape, p)
-  if shape == 1 then return math.sin(p * 2 * math.pi)
-  elseif shape == 2 then return 1 - 4 * math.abs(p - 0.5)
-  elseif shape == 3 then return p * 2 - 1
-  elseif shape == 4 then return 1 - p * 2
-  elseif shape == 5 then return p < 0.5 and 1 or -1
+  if shape <= 5 then return base_shape(shape, p)
   elseif shape == 6 then return SH_STEPS[math.floor(p * 6) % 6 + 1]
   end
   local x = p * 6
