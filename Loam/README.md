@@ -29,6 +29,14 @@ scp -r Loam we@norns.local:~/dust/code/
 
 Every track has its own insert effects: level, pan, DJ filter, drive, bit depth, sample-rate reduction, and sends to the delay and reverb. The master bus has a tempo-synced ping-pong delay, reverb, a DJ filter, a compressor (threshold, ratio, attack, release, makeup gain), a limiter and volume.
 
+## Live parameter changes
+
+Turning a knob changes sounds that are already ringing, not just the next hit. That includes the drum decays, pitch, filters, drive, the synth's sustain and LFO, the sample's pitch and END point, and all track and master effects.
+
+A few settings only apply at the start of a hit, because that's the only moment they mean anything: where a sample starts, attack times, the gap between clap hits, and velocity.
+
+Parameter locks still belong to their step. A locked step plays with its locked values and keeps them while it rings. Turning a knob afterwards does move the ringing locked note too, since that's the knob you're turning.
+
 ## Sequencer
 
 - Each track has 128 steps, its own length (1–128) and its own rate, from 1/8x up to 8x, including triplet rates (1/3, 2/3, 4/3, 3/2, x3, x6).
