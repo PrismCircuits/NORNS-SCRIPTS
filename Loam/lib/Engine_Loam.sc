@@ -354,6 +354,8 @@ Engine_Loam : CroneEngine {
 			if(File.exists(path), {
 				Buffer.readChannel(s, path, channels: [0], action: { |b|
 					var old = buffers[t];
+					// NORMALIZE (on unless the track says off): loudest point to 0.9 (about -1 dB), done on the server
+					if((trackParams[t][\smp_norm] ? 1) > 0.5, { b.normalize(0.9) });
 					buffers[t] = b;
 					if(old.notNil, { old.free });
 				});

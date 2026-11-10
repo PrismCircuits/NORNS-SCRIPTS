@@ -48,6 +48,7 @@ local SHOW_VALUE_SECS = 1.0
 local function touch(key) touched.key = key; touched.at = util.time() end
 local function showing_value(key) return touched.key == key and util.time() - touched.at < SHOW_VALUE_SECS end
 local browsing = false -- file browser is open: don't draw over it
+local ready = false    -- set after init's params:bang(), so startup doesn't load samples twice
 local confirm = nil   -- {msg, fn}: pending yes/no question (K3 yes, K2 no)
 local held = {}       -- held grid keys
 local grid_dirty = true
@@ -234,7 +235,15 @@ local function add_params()
     end
     for _, e in ipairs(S.ENGINES) do
       for _, sp in ipairs(e.params) do
-        add_param(tid(t, sp.k), sp, function(v) engine.p(t, sp.k, S.to_sc(sp, v)) end, e.name .. " " .. sp.n)
+        local action = function(v) engine.p(t, sp.k, S.to_sc(sp, v)) end
+        if sp.k == "smp_norm" then
+          -- normalizing happens when a file is read, so reload the track's sample when it's switched
+          action = function(v)
+            engine.p(t, sp.k, S.to_sc(sp, v))
+            if ready and tracks[t].file then load_sample(t, params:get(tid(t, "file"))) end
+          end
+        end
+        add_param(tid(t, sp.k), sp, action, e.name .. " " .. sp.n)
       end
     end
   end
@@ -780,6 +789,7 @@ function init()
     default_kit()
   end
   params:bang()
+  ready = true
   for t = 1, NT do update_visibility(t) end
 
   clock.run(tick_loop)

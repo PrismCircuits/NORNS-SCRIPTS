@@ -114,6 +114,7 @@ S.ENGINES = {
     O("smp_ftype", "FILTER", FTYPES, 1),
     C("smp_cutoff", "CUTOFF", 30, 18000, "exp", 18000, "hz"),
     C("smp_res", "RES", 0, 1, "lin", 0.1, "%"),
+    O("smp_norm", "NORMALIZE", {"OFF", "ON"}, 2),
   }},
 }
 

@@ -25,7 +25,7 @@ scp -r Loam we@norns.local:~/dust/code/
 | COWBELL | two squares through a band-pass |
 | SYNTH | 2 oscillators (sin/tri/saw/sqr/noise) + sub, LP/HP/BP/NOTCH filter with env, ADSR, LFO (sin/tri/saw/sqr/S&H -> pitch/cutoff/amp/pan) |
 | FM | 2-op FM, modulator feedback, index envelope |
-| SAMPLE | any file from `~/dust/audio` (incl. `audio/common`), start/end, pitch, reverse, one-shot or gated, filter, attack/release |
+| SAMPLE | any file from `~/dust/audio` (incl. `audio/common`), start/end, pitch, reverse, one-shot or gated, filter, attack/release, normalize on load |
 
 Every track has its own insert effects: level, pan, DJ filter, drive, bit depth, sample-rate reduction, and sends to the delay and reverb. The master bus has a tempo-synced ping-pong delay, reverb, a DJ filter, a compressor (threshold, ratio, attack, release, makeup gain), a limiter and volume.
 
@@ -40,6 +40,10 @@ Each track plays at most 6 voices at once. When a 7th starts, the oldest is cut.
 ## Samples and zero crossings
 
 Sample hits open at the first zero crossing of the waveform, so playback never starts mid-wave. They also close at a zero crossing when they reach END, get choked, or are cut by the voice limit. A sound that never crosses zero, such as one with a DC offset, is cut after 30 ms anyway. Your ATTACK and RELEASE knobs work on top of that: RELEASE gives a tail in GATE mode, and a fade that finishes at END in ONESHOT mode.
+
+## Normalize
+
+With NORMALIZE on (SND tab, on by default), each sample is scaled as it loads so its loudest point sits at about −1 dB. Quiet files come up to the same level as loud ones. Switch it off to keep a file's original level. Switching it reloads the track's sample straight away.
 
 ## CPU
 
