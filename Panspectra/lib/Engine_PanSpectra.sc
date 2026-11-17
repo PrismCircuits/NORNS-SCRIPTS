@@ -117,8 +117,8 @@ Engine_PanSpectra : CroneEngine {
 			var cut = (Lag.kr(cutoff, 0.05) * (900 ** In.kr(mbus + 18))).clip(20, 18000);
 			var rq = 1 - ((Lag.kr(res, 0.05) + In.kr(mbus + 19)).clip(0, 1) * 0.95);
 			// envelope times never go below the slice-smoothing time
-			var atk = (attack * (2000 ** In.kr(mbus + 20))).clip(0.005, 10).max(alag).max(mtime);
-			var rel = (release * (2000 ** In.kr(mbus + 21))).clip(0.005, 10).max(alag).max(mtime);
+			var atk = (attack * (2000 ** In.kr(mbus + 20))).clip(0.005, 10).max(alag.min(0.03)).max(mtime);
+			var rel = (release * (2000 ** In.kr(mbus + 21))).clip(0.005, 10).max(alag.min(0.03)).max(mtime);
 			var fd = (Lag.kr(fade, 0.05) * (10000 ** In.kr(mbus + 22))).clip(0.001, 10);
 			var amps, sigs, wet, dry;
 			freqs = Lag.kr(freqs, lags); // per-voice: 0 for newborn voices, glide otherwise
@@ -266,7 +266,7 @@ Engine_PanSpectra : CroneEngine {
 	updateMorph { bankSynth.set(\mtime, if(frozen) { this.morphTime } { 0 }) }
 
 	effRelease {
-		var r = (release * (2000 ** modOff[21])).clip(0.005, 10).max(this.ampLag);
+		var r = (release * (2000 ** modOff[21])).clip(0.005, 10).max(this.ampLag.min(0.03));
 		var f = (fade * (10000 ** modOff[22])).clip(0.001, 10);
 		if(frozen) { r = r.max(this.morphTime) };
 		^(r + f) * 2.5 // allow for the S-curve tails
@@ -395,7 +395,7 @@ Engine_PanSpectra : CroneEngine {
 		oldOn = trackOn.copy;
 		newOn = Array.fill(maxVoices, false);
 		born = Array.fill(maxVoices, false);
-		keep = if(snapshot) { 0 } { stab * 0.85 };
+		keep = 0;
 		order.do { |ci|
 			var v = candVoice[ci];
 			if(v >= 0) {
@@ -428,7 +428,7 @@ Engine_PanSpectra : CroneEngine {
 		maxVoices.do { |v| if(trackOn[v]) { maxA = maxA.max(trackA[v]) } };
 		refAmp = maxA.max(refAmp * (0.5 ** (1 / (this.effRate * 1.5)))).max(1e-6);
 		count = trackOn.occurrencesOf(true);
-		baseLag = this.effGlide.max(0.5 / this.effRate);
+		baseLag = this.effGlide;
 
 		// source freqs + relative levels; pitch/shift/flatten are applied in the synth
 		outF = Array.fill(maxVoices, { |v| trackF[v].clip(20, 18000) });
