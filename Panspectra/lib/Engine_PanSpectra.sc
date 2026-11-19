@@ -367,7 +367,7 @@ Engine_PanSpectra : CroneEngine {
 		pairs = List.new;
 		maxVoices.do { |v|
 			if(trackOn[v] or: { relUntil[v] > now }) {
-				var tol = (trackF[v] * 0.035).max(hz * 1.5);
+				var tol = if(snapshot) { hz * 0.5 } { (trackF[v] * 0.035).max(hz * 1.5) };
 				cands.do { |c, ci|
 					var d = (c[0] - trackF[v]).abs;
 					if(d < tol) { pairs.add([d / tol, v, ci]) };
@@ -433,10 +433,7 @@ Engine_PanSpectra : CroneEngine {
 		// source freqs + relative levels; pitch/shift/flatten are applied in the synth
 		outF = Array.fill(maxVoices, { |v| trackF[v].clip(20, 18000) });
 		rels = Array.fill(maxVoices, { |v| if(trackOn[v]) { (trackA[v] / refAmp).min(1) } { 0 } });
-		if(snapshot) { baseLag = baseLag.max(this.morphTime) };
-		lags = Array.fill(maxVoices, { |v|
-			if(born[v] and: { snapshot.not or: { oldOn[v].not } }) { 0 } { baseLag }
-		});
+		lags = Array.fill(maxVoices, { |v| if(born[v]) { 0 } { baseLag } });
 
 		bankSynth.setn(\freqs, outF, \rels, rels, \lags, lags);
 		bankSynth.set(\scale, count.max(1).sqrt.reciprocal);
