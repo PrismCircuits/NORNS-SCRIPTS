@@ -65,8 +65,8 @@ local MOD_PAGE = #pages + 1
 -- mod matrix definitions -----------------------------------------------------
 -- (order of SRC and DEST lists must match the engine's indices)
 
-local SRC_NAMES = {"off", "sine", "triangle", "saw", "ramp", "square"}
-local SRC_SHORT = {"--", "SIN", "TRI", "SAW", "RMP", "SQR"}
+local SRC_NAMES = {"off", "sine", "triangle", "saw", "ramp", "square", "stepped random", "smooth random"}
+local SRC_SHORT = {"--", "SIN", "TRI", "SAW", "RMP", "SQR", "S&H", "RND"}
 local SQUARE = 6
 
 -- id: param id, short: table column, name: full description, pname: PARAMS menu name
@@ -95,6 +95,14 @@ local DESTS = {
   {id = "release", short = "release", name = "envelope release", pname = "release"},
   {id = "fade", short = "fade", name = "band volume fade", pname = "fade"},
 }
+for i = 1, NUM_SLOTS do
+  table.insert(DESTS, {id = "mod_rate_" .. i, short = "L" .. i .. " spd",
+    name = "LFO " .. i .. " speed", pname = i .. " rate"})
+end
+for i = 1, NUM_SLOTS do
+  table.insert(DESTS, {id = "mod_amt_" .. i, short = "L" .. i .. " amt",
+    name = "LFO " .. i .. " amount", pname = i .. " amt"})
+end
 local DEST_NAMES = {}
 for i, d in ipairs(DESTS) do DEST_NAMES[i] = d.name end
 

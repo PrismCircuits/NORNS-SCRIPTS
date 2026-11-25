@@ -23,7 +23,7 @@ Engine_PanSpectra : CroneEngine {
 	classvar maxVoices = 33;
 	classvar fftSize = 4096;
 	classvar numSlots = 10;
-	classvar numDests = 23;
+	classvar numDests = 43;
 
 	var fftBuf, waveBufs, fbBus, modBus;
 	var anaSynth, bankSynth, modSynth, modResp, task, refreshTask, luaAddr;
@@ -72,21 +72,31 @@ Engine_PanSpectra : CroneEngine {
 			var pws = NamedControl.kr(\pws, Array.fill(numSlots, 0.5));
 			var dsts = NamedControl.kr(\dsts, Array.fill(numSlots, 0));
 			var amts = NamedControl.kr(\amts, Array.fill(numSlots, 0));
-			var lfos, sums;
+			var lfos, sums, prev, effAmts;
+			var route = { |d| Mix(Array.fill(numSlots, { |i| prev[i] * ((dsts[i] - d).abs < 0.5) })) };
+			prev = LocalIn.kr(numSlots);
+			effAmts = Array.fill(numSlots, { |i| (amts[i] + route.(33 + i)).clip(-1, 1) });
 			lfos = Array.fill(numSlots, { |i|
-				var ph = Phasor.kr(0, rates[i] * ControlDur.ir, 0, 1);
+				var r = (rates[i] * (100 ** route.(23 + i))).clip(0.001, 50);
+				var ph = Phasor.kr(0, r * ControlDur.ir, 0, 1);
+				var trig = HPZ1.kr(ph) < 0;
+				var cur = TRand.kr(-1, 1, trig);
+				var last = Latch.kr(Delay1.kr(cur), trig);
 				Select.kr(shapes[i], [
 					DC.kr(0),                    // off
 					sin(ph * 2pi),               // sine
 					1 - (4 * (ph - 0.5).abs),    // triangle
 					1 - (2 * ph),                // saw (falling)
 					(2 * ph) - 1,                // ramp (rising)
-					((ph < pws[i]) * 2) - 1      // square / pulse
+					((ph < pws[i]) * 2) - 1,     // square / pulse
+					cur,
+					last + ((cur - last) * (0.5 - (0.5 * cos(ph * pi))))
 				])
 			});
+			LocalOut.kr(lfos * effAmts);
 			sums = Array.fill(numDests, { |d|
 				if(d == 0) { DC.kr(0) } {
-					Mix(Array.fill(numSlots, { |i| lfos[i] * amts[i] * ((dsts[i] - d).abs < 0.5) }))
+					Mix(Array.fill(numSlots, { |i| lfos[i] * effAmts[i] * ((dsts[i] - d).abs < 0.5) }))
 				}
 			});
 			Out.kr(out, sums);
@@ -225,7 +235,7 @@ Engine_PanSpectra : CroneEngine {
 		this.addCommand("resonance", "f", { |msg| bankSynth.set(\res, msg[1]) });
 
 		// mod slots: (slot 1-10, value)
-		this.addCommand("mod_src", "if", { |msg| this.setSlot(\shapes, msg[1], msg[2].asInteger.clip(0, 5)) });
+		this.addCommand("mod_src", "if", { |msg| this.setSlot(\shapes, msg[1], msg[2].asInteger.clip(0, 7)) });
 		this.addCommand("mod_rate", "if", { |msg| this.setSlot(\rates, msg[1], msg[2]) });
 		this.addCommand("mod_pw", "if", { |msg| this.setSlot(\pws, msg[1], msg[2]) });
 		this.addCommand("mod_dst", "if", { |msg| this.setSlot(\dsts, msg[1], msg[2].asInteger.clip(0, numDests - 1)) });
